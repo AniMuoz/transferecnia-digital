@@ -1,51 +1,77 @@
 import cv2
 import os
+import time
 from ultralytics import YOLO
 
-# Cargar modelo YOLO
-model = YOLO('yolov8n.pt')  # o 'yolov8s.pt' / 'yolov9c.pt'
 
-# Ruta del video
-video_path = 'vegetita.jpg'
+def estado_micro(x):
+    if x <= 20:
+        return "Asientos disponibles"
+    if x <= 30:
+        return "Pasillo disponible"
+    if x > 30:
+        return "Llena"
 
-# Carpeta donde guardar los frames
-output_folder = 'frames_detectados'
-os.makedirs(output_folder, exist_ok=True)
 
-# Abrir video
-cap = cv2.VideoCapture(video_path)
+def iniciar_deteccion(model_path='yolov8n.pt', intervalo=10, output_folder='frames_detectados'):
+    """
+    Inicia la detección de personas en tiempo real con YOLO.
+    Retorna el número de personas detectadas en cada intervalo.
+    """
+    # Cargar modelo YOLO
+    model = YOLO(model_path)
 
-fps = cap.get(cv2.CAP_PROP_FPS)         # Cuadros por segundo
-frame_interval = int(fps * 10)          # Cada 10 segundos
-frame_count = 0
-frame_id = 0
+    # Crear carpeta para guardar frames
+    os.makedirs(output_folder, exist_ok=True)
 
-while True:
-    ret, frame = cap.read()
-    if not ret:
-        break
+    # Abrir cámara
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ No se pudo acceder a la cámara.")
+        return
 
-    # Procesar solo cada 10 segundos
-    if frame_count % frame_interval == 0:
-        # Analizar frame con YOLO
-        results = model(frame)
-        num_personas = (results[0].boxes.cls == 0).sum().item()
+    last_time = time.time()
+    frame_id = 0
 
-        # Mostrar conteo
-        print(f"\nFrame {frame_id}: {num_personas} personas detectadas\n")
+    print("🎥 Detección iniciada... Presiona 'q' para salir.\n")
 
-        # DIBUJAR detecciones en la imagen
-        annotated_frame = results[0].plot()  # Devuelve el frame con las cajas dibujadas
+    while True:
+        ret, frame = cap.read()
+        if not ret:
+            print("⚠️ No se pudo leer el frame de la cámara.")
+            break
 
-        # GUARDAR el frame analizado
-        save_path = os.path.join(output_folder, f"frame_{frame_id:04d}.jpg")
-        cv2.imwrite(save_path, annotated_frame)
-        print(f"Frame guardado en: {save_path}")
+        current_time = time.time()
 
-        frame_id += 1
+        # Detección cada cierto intervalo
+        if current_time - last_time >= intervalo:
+            last_time = current_time
 
-    frame_count += 1
+            results = model(frame)
+            num_personas = (results[0].boxes.cls == 0).sum().item()
 
-cap.release()
-print("✅ Análisis completado. Frames guardados en:", output_folder)
+            print(f"[{time.strftime('%H:%M:%S')}] {num_personas} personas detectadas.")
+            print(estado_micro(num_personas))
+
+            # Dibujar detecciones y guardar
+            annotated_frame = results[0].plot()
+            save_path = os.path.join(output_folder, f"frame_{frame_id:04d}.jpg")
+            cv2.imwrite(save_path, annotated_frame)
+            print(f"🖼️ Frame guardado en: {save_path}\n")
+
+            frame_id += 1
+
+        cv2.imshow("Detección de personas (YOLOv8)", frame)
+
+        if cv2.waitKey(1) & 0xFF == ord('q'):
+            break
+
+    cap.release()
+    cv2.destroyAllWindows()
+    print("✅ Detección finalizada. Frames guardados en:", output_folder)
+
+
+# Solo se ejecuta si se ejecuta directamente este archivo (no al importarlo)
+if __name__ == "__main__":
+    iniciar_deteccion()
 

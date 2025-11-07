@@ -3,6 +3,14 @@ import os
 import time
 from ultralytics import YOLO
 
+def estado_micro(x):
+    if x <= 20:
+        return "Asientos disponibles"
+    if x <= 30:
+        return "Pasillo disponible"
+    if x > 30:
+        return "Llena"
+
 # Cargar modelo YOLO
 model = YOLO('yolov8n.pt')  # Puedes cambiar a 'yolov8s.pt' o 'yolov9c.pt' si quieres más precisión
 
@@ -42,6 +50,8 @@ while True:
 
         # Mostrar conteo
         print(f"[{time.strftime('%H:%M:%S')}] {num_personas} personas detectadas.")
+
+        print(estado_micro(num_personas))
 
         # Dibujar detecciones
         annotated_frame = results[0].plot()
