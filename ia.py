@@ -13,18 +13,15 @@ def estado_micro(x):
         return "Llena"
 
 
-def iniciar_deteccion(model_path='yolov8n.pt', intervalo=10, output_folder='frames_detectados'):
+def iniciar_deteccion(model_path='yolov8n.pt', intervalo=10, output_folder='frames_detectados', callback=None):
     """
     Inicia la detección de personas en tiempo real con YOLO.
-    Retorna el número de personas detectadas en cada intervalo.
+    Si se pasa una función callback, se llama cada vez que hay una nueva detección:
+        callback(num_personas)
     """
-    # Cargar modelo YOLO
     model = YOLO(model_path)
-
-    # Crear carpeta para guardar frames
     os.makedirs(output_folder, exist_ok=True)
 
-    # Abrir cámara
     cap = cv2.VideoCapture(0)
     if not cap.isOpened():
         print("❌ No se pudo acceder a la cámara.")
@@ -53,12 +50,16 @@ def iniciar_deteccion(model_path='yolov8n.pt', intervalo=10, output_folder='fram
             print(f"[{time.strftime('%H:%M:%S')}] {num_personas} personas detectadas.")
             print(estado_micro(num_personas))
 
-            # Dibujar detecciones y guardar
+            # Si se entregó una función externa, se llama aquí
+            if callback is not None:
+                try:
+                    callback(num_personas)
+                except Exception as e:
+                    print(f"⚠️ Error al ejecutar callback: {e}")
+
             annotated_frame = results[0].plot()
             save_path = os.path.join(output_folder, f"frame_{frame_id:04d}.jpg")
             cv2.imwrite(save_path, annotated_frame)
-            print(f"🖼️ Frame guardado en: {save_path}\n")
-
             frame_id += 1
 
         cv2.imshow("Detección de personas (YOLOv8)", frame)
@@ -71,7 +72,5 @@ def iniciar_deteccion(model_path='yolov8n.pt', intervalo=10, output_folder='fram
     print("✅ Detección finalizada. Frames guardados en:", output_folder)
 
 
-# Solo se ejecuta si se ejecuta directamente este archivo (no al importarlo)
 if __name__ == "__main__":
     iniciar_deteccion()
-
