@@ -16,7 +16,7 @@ app = Flask(__name__)
 CORS(app)
 
 # ==================== Config / Estado ====================
-DESTINO = (-33.0066285122585, -71.5451341716933)              # Paradero destino (editable desde la UI)
+DESTINO = (-33.01295911698026, -71.54156995287777)              # Paradero destino (editable desde la UI)
 OCUPACION: Dict[str, Dict[str, Any]] = {}   # Ocupación por bus
 BUSES: Dict[str, Dict[str, Any]] = {}       # Estado de buses simulados
 
