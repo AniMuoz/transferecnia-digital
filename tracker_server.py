@@ -208,8 +208,8 @@ INDEX_HTML = r"""
           <th>Dist</th>
           <th>ETA</th>
           <th>Paradas</th>
-          <th>Ocupación</th>
-          <th>%</th>
+          <!-- <th>Ocupación</th> -->
+          <!-- <th>%</th> -->
           <th>Status</th>
           <th>Estado</th>
         </tr>`;
