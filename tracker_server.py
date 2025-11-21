@@ -1,581 +1,794 @@
-# tracker_server.py
-import os, time, math, sqlite3, requests
+import os
+import math
 from typing import Dict, Any, List, Tuple, Optional
+
+import requests
 from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 from geopy.distance import geodesic
 
-# (opcional) gtfs-realtime
-_HAS_GTFS = True
-try:
-    from google.transit import gtfs_realtime_pb2  # type: ignore
-except Exception:
-    _HAS_GTFS = False
-
 app = Flask(__name__)
 CORS(app)
 
-# ==================== Config / Estado ====================
-DESTINO = (-33.4624, -70.6550)              # Paradero destino (editable desde la UI)
-OCUPACION: Dict[str, Dict[str, Any]] = {}   # Ocupación por bus
-BUSES: Dict[str, Dict[str, Any]] = {}       # Estado de buses simulados
+# ==================== CONFIG ====================
 
-# Ruta: ORS si hay API key; si no, OSRM público
-ORS_API_KEY = os.getenv("ORS_API_KEY", "").strip()
+# Web Service JSON de posicionamiento (DyS)
+WS_POS_URL   = os.getenv("WS_POS_URL", "").strip()
+WS_POS_USER  = os.getenv("WS_POS_USER", "").strip()
+WS_POS_PASS  = os.getenv("WS_POS_PASS", "").strip()
+WS_POS_TOKEN = os.getenv("WS_POS_TOKEN", "").strip()
 
-# Paradas reales (OSM)
-STOP_MATCH_DIST_M = 60.0          # distancia máx (m) de un paradero a la ruta
-AUTOSTOPS_DWELL_SEC = 5           # dwell (s) por parada
-STOP_RADIUS_KM = 0.02             # 20 m para considerar “llegada” a la parada
+# Centro del mapa (Viña/Santiago, ajusta si quieres)
+DEFAULT_CENTER = (-33.4624, -70.6550)
 
-DB = "ocupacion.sqlite"
-def init_db():
-    con = sqlite3.connect(DB); cur = con.cursor()
-    cur.execute("""CREATE TABLE IF NOT EXISTS ocupacion(
-        id INTEGER PRIMARY KEY AUTOINCREMENT,
-        bus_id TEXT, ts TEXT, count INTEGER, status TEXT, capacity INTEGER, pct REAL
-    )""")
-    con.commit(); con.close()
-init_db()
 
-# ==================== UI ====================
+# ==================== HTML (UI) ====================
+
 INDEX_HTML = r"""
 <!doctype html>
 <html>
 <head>
 <meta charset="utf-8" />
-<title>Simulador buses → paradero</title>
+<title>Monitor buses DTP</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 <style>
-  body{font-family:Arial, sans-serif; padding:12px; max-width:1100px; margin:auto}
-  h1{font-size:1.25rem;margin:6px 0}
+  body{font-family:Arial, sans-serif; padding:12px; max-width:1200px; margin:auto}
+  h1{font-size:1.4rem;margin:6px 0}
   .card{border:1px solid #ddd;border-radius:8px;padding:10px;margin:8px 0}
-  .row{display:flex;gap:8px}.row>*{flex:1}
+  .row{display:flex;gap:8px;flex-wrap:wrap}.row>*{flex:1 1 0}
   input,button{padding:8px}
-  #map{height:420px;border-radius:8px}
-  table{width:100%;border-collapse:collapse}th,td{padding:6px;border-bottom:1px solid #eee}
-  .pill{display:inline-block;padding:2px 6px;border-radius:999px;background:#eee;font-size:12px;margin-left:4px}
+  button{cursor:pointer}
+  #map{height:480px;border-radius:8px}
+  table{width:100%;border-collapse:collapse}th,td{padding:6px;border-bottom:1px solid #eee;font-size:0.9rem}
+  .pill{display:inline-block;padding:2px 6px;border-radius:999px;background:#eee;font-size:11px;margin-left:4px}
+  small{font-size:0.75rem;color:#666}
+  .btn-active{background:#007bff;color:white}
 </style>
 </head>
 <body>
-<h1>Simulador buses → paradero</h1>
+<h1>Monitor / Recomendador de buses DTP</h1>
 <div id="status">Estado: listo</div>
 
 <div class="card">
-  <h3>Destino (paradero)</h3>
+  <h3>1. Selección de paradero y destino</h3>
+  <p>
+    Usa los botones para elegir qué marcar en el mapa:
+    <ul>
+      <li><b>Paradero</b>: punto donde estás esperando el bus.</li>
+      <li><b>Destino</b>: hacia dónde quieres ir (aproximado).</li>
+    </ul>
+    Luego haz click en el mapa para fijar cada punto.
+  </p>
   <div class="row">
-    <div><label>Lat</label><input id="destLat"></div>
-    <div><label>Lon</label><input id="destLon"></div>
+    <button id="modeStopBtn" class="btn-active">Modo: marcar PARADERO</button>
+    <button id="modeDestBtn">Modo: marcar DESTINO</button>
   </div>
-  <button id="setDestBtn">Establecer destino</button>
+  <br>
+  <div class="row">
+    <div>
+      <label>Paradero (lat, lon)</label>
+      <input id="stopLat" placeholder="lat" />
+      <input id="stopLon" placeholder="lon" />
+    </div>
+    <div>
+      <label>Destino (lat, lon)</label>
+      <input id="destLat" placeholder="lat" />
+      <input id="destLon" placeholder="lon" />
+    </div>
+  </div>
+  <small>Puedes editar las coordenadas a mano si quieres algo muy exacto.</small>
 </div>
 
 <div class="card">
-  <h3>Crear bus (ruta + paraderos reales OSM)</h3>
+  <h3>2. Filtros de servicio</h3>
   <div class="row">
-    <div><label>Bus ID</label><input id="busId" placeholder="bus001"></div>
-    <div><label>Velocidad (km/h)</label><input id="speed" value="25"></div>
+    <div>
+      <label>Servicio (ej: T201, opcional)</label>
+      <input id="serviceInput" placeholder="T201">
+    </div>
+    <div>
+      <label>Sentido (I/R, opcional)</label>
+      <input id="directionInput" placeholder="I">
+    </div>
   </div>
-  <div class="row">
-    <div><label>Origen lat</label><input id="srcLat" placeholder="-33.02"></div>
-    <div><label>Origen lon</label><input id="srcLon" placeholder="-71.54"></div>
-  </div>
-  <div class="row">
-    <button id="startSimBtn">Iniciar simulación</button>
-    <button id="stopSimBtn">Detener</button>
-  </div>
-  <small>Las paradas se obtienen de OpenStreetMap a lo largo de la ruta.</small>
-</div>
-
-<div class="card"><h3>Mapa</h3><div id="map"></div></div>
-
-<div class="card">
-  <h3>Próximas llegadas</h3>
-  <div id="arrivals"></div>
+  <small>Si dejas los filtros vacíos, se usan todos los buses disponibles en el WS.</small>
 </div>
 
 <div class="card">
-  <h3>Ocupación (desde detector)</h3>
-  <div id="occ"></div>
+  <h3>3. Operaciones</h3>
+  <div class="row">
+    <button id="btnBusesStop">Ver buses que llegan a este paradero</button>
+    <button id="btnRecommendations">Recomendar buses para ir al destino</button>
+    <button id="btnStopAuto">Detener actualización automática</button>
+  </div>
+  <small>
+    El sistema usa la posición, velocidad y dirección aproximada del bus para estimar
+    distancia y ETA. Es una estimación simple, solo para demo/prototipo.
+  </small>
 </div>
 
 <div class="card">
-  <h3>RED (no oficial) — Próximos buses por paradero</h3>
-  <div class="row">
-    <input id="stopId" placeholder="PA433">
-    <button id="fetchStopBtn">Consultar</button>
-  </div>
-  <div id="stopData"></div>
+  <h3>Mapa</h3>
+  <div id="map"></div>
+</div>
+
+<div class="card">
+  <h3>Resultados</h3>
+  <div id="results"></div>
 </div>
 
 <script>
 (function(){
-  const statusEl=document.getElementById('status');
-  const destLat=document.getElementById('destLat'); const destLon=document.getElementById('destLon');
-  const setDestBtn=document.getElementById('setDestBtn');
-  const busIdEl=document.getElementById('busId'); const speedEl=document.getElementById('speed');
-  const srcLatEl=document.getElementById('srcLat'); const srcLonEl=document.getElementById('srcLon');
-  const startSimBtn=document.getElementById('startSimBtn'); const stopSimBtn=document.getElementById('stopSimBtn');
-  const arrivalsEl=document.getElementById('arrivals'); const occEl=document.getElementById('occ');
-  const stopIdEl=document.getElementById('stopId'); const fetchStopBtn=document.getElementById('fetchStopBtn'); const stopDataEl=document.getElementById('stopData');
+  const statusEl = document.getElementById('status');
+  const modeStopBtn = document.getElementById('modeStopBtn');
+  const modeDestBtn = document.getElementById('modeDestBtn');
 
-  let map=L.map('map'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-  let destMarker=L.marker([0,0],{title:'Paradero destino'}).addTo(map);
-  let busMarkers={}, polylines={}, stopMarkers={};
+  const stopLatEl = document.getElementById('stopLat');
+  const stopLonEl = document.getElementById('stopLon');
+  const destLatEl = document.getElementById('destLat');
+  const destLonEl = document.getElementById('destLon');
 
-  fetch('/get_destination').then(r=>r.json()).then(j=>{
-    const [la,lo]=j.destino; destLat.value=la; destLon.value=lo; destMarker.setLatLng([la,lo]); map.setView([la,lo],13);
+  const serviceInput   = document.getElementById('serviceInput');
+  const directionInput = document.getElementById('directionInput');
+
+  const btnBusesStop       = document.getElementById('btnBusesStop');
+  const btnRecommendations = document.getElementById('btnRecommendations');
+  const btnStopAuto        = document.getElementById('btnStopAuto');
+
+  const resultsEl = document.getElementById('results');
+
+  let mode = "stop"; // "stop" o "dest"
+  let currentMode = null; // "near" | "reco" | null (para auto-refresh)
+  let refreshTimer = null;
+
+  let stopLat = null, stopLon = null;
+  let destLat = null, destLon = null;
+
+  // Leaflet
+  let map = L.map('map');
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+  map.setView([{{ center_lat }}, {{ center_lon }}], 13);
+
+  let stopMarker = null;
+  let destMarker = null;
+  let busMarkers = {};
+  let routeLayers = [];
+
+  function clearRoutes(){
+    for (const l of routeLayers){
+      map.removeLayer(l);
+    }
+    routeLayers = [];
+  }
+
+  function setModeClick(newMode){
+    mode = newMode;
+    if (mode === "stop") {
+      modeStopBtn.classList.add("btn-active");
+      modeDestBtn.classList.remove("btn-active");
+      statusEl.textContent = "Modo selección: haz click en el mapa para marcar PARADERO.";
+    } else {
+      modeDestBtn.classList.add("btn-active");
+      modeStopBtn.classList.remove("btn-active");
+      statusEl.textContent = "Modo selección: haz click en el mapa para marcar DESTINO.";
+    }
+  }
+
+  modeStopBtn.onclick = () => setModeClick("stop");
+  modeDestBtn.onclick = () => setModeClick("dest");
+
+  function updateStop(lat, lon){
+    stopLat = lat; stopLon = lon;
+    stopLatEl.value = lat.toFixed(6);
+    stopLonEl.value = lon.toFixed(6);
+    if (!stopMarker){
+      stopMarker = L.marker([lat, lon], {title:"Paradero"}).addTo(map);
+    } else {
+      stopMarker.setLatLng([lat, lon]);
+    }
+  }
+
+  function updateDest(lat, lon){
+    destLat = lat; destLon = lon;
+    destLatEl.value = lat.toFixed(6);
+    destLonEl.value = lon.toFixed(6);
+    if (!destMarker){
+      destMarker = L.marker([lat, lon], {title:"Destino"}).addTo(map);
+    } else {
+      destMarker.setLatLng([lat, lon]);
+    }
+  }
+
+  map.on('click', function(e){
+    const lat = e.latlng.lat;
+    const lon = e.latlng.lng;
+    if (mode === "stop"){
+      updateStop(lat, lon);
+    } else {
+      updateDest(lat, lon);
+    }
   });
 
-  setDestBtn.onclick=()=>{
-    const la=parseFloat(destLat.value), lo=parseFloat(destLon.value);
-    if(isNaN(la)||isNaN(lo)){alert('Destino inválido');return;}
-    fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:la,lon:lo})})
-      .then(()=>{destMarker.setLatLng([la,lo]); map.setView([la,lo],13);});
-  };
-
-  startSimBtn.onclick=async ()=>{
-    const id=(busIdEl.value||'bus001').trim(); const sp=parseFloat(speedEl.value||'25');
-    const la=parseFloat(srcLatEl.value), lo=parseFloat(srcLonEl.value);
-    if(isNaN(la)||isNaN(lo)){alert('Origen inválido');return;}
-    const res=await fetch('/sim/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({bus_id:id, lat:la, lon:lo, speed_kmh:sp})});
-    const j=await res.json(); if(!j.ok){alert('No se pudo iniciar');return;}
-    if(j.points?.length>=2){ if(polylines[id]) map.removeLayer(polylines[id]);
-      polylines[id]=L.polyline(j.points,{weight:4,opacity:0.75}).addTo(map);
-      map.fitBounds(polylines[id].getBounds().pad(0.3));
+  function readCoordsFromInputs(){
+    if (stopLatEl.value && stopLonEl.value){
+      const la = parseFloat(stopLatEl.value);
+      const lo = parseFloat(stopLonEl.value);
+      if (!isNaN(la) && !isNaN(lo)) updateStop(la, lo);
     }
-    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); }
-    stopMarkers[id]=[];
-    (j.auto_stops||[]).forEach(s=>{
-      const mk=L.circleMarker([s[0],s[1]],{radius:5,opacity:0.9}).addTo(map);
-      mk.bindTooltip(s[2] ? `🚌 ${s[2]}` : 'Paradero'); stopMarkers[id].push(mk);
-    });
-  };
-
-  stopSimBtn.onclick=async ()=>{
-    const id=(busIdEl.value||'bus001').trim();
-    await fetch('/sim/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bus_id:id})});
-    if(busMarkers[id]){map.removeLayer(busMarkers[id]); delete busMarkers[id];}
-    if(polylines[id]){map.removeLayer(polylines[id]); delete polylines[id];}
-    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); delete stopMarkers[id]; }
-  };
-
-  async function refreshBuses(){
-    try{
-      const j=await (await fetch('/sim/buses')).json(); if(!j.ok) return;
-      const [dla,dlo]=j.destino; destMarker.setLatLng([dla,dlo]);
-      const list=[...j.buses].sort((a,b)=>a.eta_min-b.eta_min);
-      let html='<table><tr><th>Bus</th><th>Dist</th><th>ETA</th><th>Paradas</th><th>Estado</th></tr>';
-      if(list.length===0){html+='<tr><td colspan=5><i>Sin buses</i></td></tr>'; statusEl.textContent='Estado: sin buses';}
-      else{
-        statusEl.textContent=`Próxima llegada: ${list[0].bus_id} en ${list[0].eta_min.toFixed(1)} min`;
-        for(const b of list){
-          const id=b.bus_id, la=b.lat, lo=b.lon;
-          if(!busMarkers[id]) busMarkers[id]=L.marker([la,lo],{title:id}).addTo(map); else busMarkers[id].setLatLng([la,lo]);
-          let tip=`${id}<br>Dist: ${b.distance_km.toFixed(2)} km<br>ETA: ${b.eta_min.toFixed(1)} min`;
-          if(b.is_dwell) tip+=`<br><span class="pill">Detenido</span>`;
-          busMarkers[id].bindTooltip(tip);
-          const si=b.stops_total>0?`${b.stops_next_idx}/${b.stops_total}`:'—';
-          const state=b.arrived?'En paradero':(b.is_dwell?'En parada':(b.has_route?'En ruta':'Recta'));
-          html+=`<tr><td><b>${id}</b></td><td>${b.distance_km.toFixed(2)} km</td><td>${b.eta_min.toFixed(1)} min</td><td>${si}</td><td>${state}</td></tr>`;
-        }
-      }
-      html+='</table>'; arrivalsEl.innerHTML=html;
-    }catch(_){}
+    if (destLatEl.value && destLonEl.value){
+      const la = parseFloat(destLatEl.value);
+      const lo = parseFloat(destLonEl.value);
+      if (!isNaN(la) && !isNaN(lo)) updateDest(la, lo);
+    }
   }
-  setInterval(refreshBuses, 1000); refreshBuses();
 
-  async function refreshOcc(){
-    try{
-      const [occ,sim]=await Promise.all([fetch('/occupancy/list').then(r=>r.json()), fetch('/sim/buses').then(r=>r.json())]);
-      const simB=sim.ok?sim.buses:[];
-      let html='<table><tr><th>Bus</th><th>Count</th><th>%</th><th>Status</th><th>Dist</th><th>ETA</th><th>TS</th></tr>';
-      const keys=Object.keys(occ);
-      if(keys.length===0) html+='<tr><td colspan=7><i>Sin datos</i></td></tr>';
-      for(const [id,v] of Object.entries(occ)){
-        const cap=v.capacity||40; const pct=Math.min(100,Math.round((v.count/cap)*100));
-        const simR=simB.find(b=>b.bus_id===id); const dist=simR?`${simR.distance_km.toFixed(2)} km`:'—'; const eta=simR?`${simR.eta_min.toFixed(1)} min`:'—';
-        html+=`<tr><td><b>${id}</b></td><td>${v.count}</td><td>${pct}%</td><td>${v.status}</td><td>${dist}</td><td>${eta}</td><td><small>${v.ts}</small></td></tr>`;
+  function renderBuses(buses, options){
+    options = options || {};
+    const showRecommended = !!options.showRecommended;
+    const stop = options.stop || null;
+    const dest = options.dest || null;
+
+    // limpiar markers y rutas anteriores
+    for (const id in busMarkers){
+      map.removeLayer(busMarkers[id]);
+    }
+    busMarkers = {};
+    clearRoutes();
+
+    let rows = [];
+    for (const b of buses){
+      const id = b.bus_id;
+      const la = b.lat;
+      const lo = b.lon;
+      const svc = b.service || "—";
+      const dir = b.direction || "—";
+      const dist = (b.distance_to_stop_km != null ? b.distance_to_stop_km.toFixed(2)+" km" : "—");
+      const eta  = (b.eta_to_stop_min != null ? b.eta_to_stop_min.toFixed(1)+" min" : "—");
+      const speed = (b.speed_kmh != null ? b.speed_kmh.toFixed(1)+" km/h" : "—");
+      const rec  = (b.recommended ? "Sí" : "No");
+
+      const isRec = !!b.recommended;
+      const color = isRec ? "green" : (b.approaching_stop === false ? "gray" : "blue");
+
+      busMarkers[id] = L.circleMarker([la, lo], {
+        radius: 6,
+        opacity: 0.9,
+        color: color,
+        fillOpacity: 0.8
+      }).addTo(map);
+
+      let tooltip = `Bus: ${id}<br>Servicio: ${svc} (${dir})<br>Dist paradero: ${dist}<br>ETA paradero: ${eta}`;
+      if (showRecommended) tooltip += `<br>Recomendado: ${isRec ? "Sí ✅" : "No"}`;
+      busMarkers[id].bindTooltip(tooltip);
+
+      // Rutas visuales
+      if (stop){
+        const poly1 = L.polyline([[la, lo], [stop[0], stop[1]]], {
+          color: color,
+          weight: isRec ? 4 : 2,
+          opacity: 0.7
+        }).addTo(map);
+        routeLayers.push(poly1);
       }
-      html+='</table>'; occEl.innerHTML=html;
-    }catch(_){ occEl.textContent='Error'; }
-  }
-  setInterval(refreshOcc, 5000); refreshOcc();
+      if (showRecommended && isRec && stop && dest){
+        const poly2 = L.polyline([[stop[0], stop[1]], [dest[0], dest[1]]], {
+          color: "orange",
+          weight: 3,
+          opacity: 0.6,
+          dashArray: "6,6"
+        }).addTo(map);
+        routeLayers.push(poly2);
+      }
 
-  fetchStopBtn.onclick=async()=>{
-    const s=(stopIdEl.value||'').trim(); if(!s){alert('Ingresa stop_id');return;}
-    try{ const j=await (await fetch('/red/arrivals/'+encodeURIComponent(s))).json(); stopDataEl.innerHTML='<pre>'+JSON.stringify(j.data||j,null,2)+'</pre>'; }
-    catch(_){ stopDataEl.textContent='Error'; }
+      rows.push(`
+        <tr>
+          <td><b>${id}</b></td>
+          <td>${svc}</td>
+          <td>${dir}</td>
+          <td>${dist}</td>
+          <td>${eta}</td>
+          <td>${speed}</td>
+          ${showRecommended ? `<td>${rec}</td>` : ""}
+        </tr>
+      `);
+    }
+
+    let html = `<table>
+      <tr>
+        <th>Bus</th><th>Servicio</th><th>Sentido</th>
+        <th>Distancia al paradero</th><th>ETA al paradero</th><th>Velocidad</th>
+        ${showRecommended ? "<th>Recomendado</th>" : ""}
+      </tr>`;
+    if (rows.length === 0){
+      html += `<tr><td colspan="${showRecommended ? 7 : 6}"><i>Sin buses para los filtros y ubicación seleccionados</i></td></tr>`;
+    } else {
+      html += rows.join("");
+    }
+    html += "</table>";
+    resultsEl.innerHTML = html;
+  }
+
+  // ======== auto-refresh ========
+  function setAutoRefresh(newMode){
+    currentMode = newMode;
+    if (refreshTimer) {
+      clearInterval(refreshTimer);
+      refreshTimer = null;
+    }
+    if (!newMode) {
+      statusEl.textContent = "Actualización automática detenida.";
+      return;
+    }
+    refreshTimer = setInterval(() => {
+      if (currentMode === "near") {
+        loadBusesNearStop(false);
+      } else if (currentMode === "reco") {
+        loadRecommendations(false);
+      }
+    }, 15000); // cada 15 segundos
+  }
+
+  btnStopAuto.onclick = () => setAutoRefresh(null);
+
+  // ======== llamadas al backend ========
+
+  async function loadBusesNearStop(showAlerts=true){
+    readCoordsFromInputs();
+    if (stopLat == null || stopLon == null){
+      if (showAlerts) alert("Primero marca un PARADERO en el mapa.");
+      return;
+    }
+
+    let url = `/api/buses_near_stop?stop_lat=${encodeURIComponent(stopLat)}&stop_lon=${encodeURIComponent(stopLon)}`;
+    const svc = (serviceInput.value || "").trim();
+    const dir = (directionInput.value || "").trim();
+    if (svc) url += `&service=${encodeURIComponent(svc)}`;
+    if (dir) url += `&direction=${encodeURIComponent(dir)}`;
+
+    try {
+      const res = await fetch(url);
+      const j = await res.json();
+      if (!j.ok){
+        if (showAlerts) alert("Error WS: " + (j.error || "desconocido"));
+        return;
+      }
+      const count = j.buses.length;
+      const now = new Date().toLocaleTimeString();
+      statusEl.textContent = `(${now}) Buses que se aproximan al paradero: ${count}`;
+      renderBuses(j.buses, {showRecommended:false, stop:j.stop, dest:null});
+    } catch (e) {
+      console.error(e);
+      if (showAlerts) alert("Error consultando backend (revisa consola).");
+    }
+  }
+
+  async function loadRecommendations(showAlerts=true){
+    readCoordsFromInputs();
+    if (stopLat == null || stopLon == null){
+      if (showAlerts) alert("Primero marca un PARADERO en el mapa.");
+      return;
+    }
+    if (destLat == null || destLon == null){
+      if (showAlerts) alert("Ahora marca un DESTINO en el mapa.");
+      return;
+    }
+
+    let url = `/api/recommendations?stop_lat=${encodeURIComponent(stopLat)}&stop_lon=${encodeURIComponent(stopLon)}&dest_lat=${encodeURIComponent(destLat)}&dest_lon=${encodeURIComponent(destLon)}`;
+    const svc = (serviceInput.value || "").trim();
+    const dir = (directionInput.value || "").trim();
+    if (svc) url += `&service=${encodeURIComponent(svc)}`;
+    if (dir) url += `&direction=${encodeURIComponent(dir)}`;
+
+    try {
+      const res = await fetch(url);
+      const j = await res.json();
+      if (!j.ok){
+        if (showAlerts) alert("Error WS: " + (j.error || "desconocido"));
+        return;
+      }
+      const recs = j.buses.filter(b => b.recommended);
+      const total = j.buses.length;
+      const now = new Date().toLocaleTimeString();
+      statusEl.textContent = `(${now}) Recomendaciones: ${recs.length} buses recomendados de ${total} candidatos.`;
+      renderBuses(j.buses, {showRecommended:true, stop:j.stop, dest:j.dest || null});
+    } catch (e) {
+      console.error(e);
+      if (showAlerts) alert("Error consultando backend (revisa consola).");
+    }
+  }
+
+  // Botones principales
+  btnBusesStop.onclick = async () => {
+    await loadBusesNearStop(true);
+    setAutoRefresh("near");
   };
+
+  btnRecommendations.onclick = async () => {
+    await loadRecommendations(true);
+    setAutoRefresh("reco");
+  };
+
+  // Mensaje inicial
+  setModeClick("stop");
 })();
 </script>
 </body>
 </html>
 """
 
-# ==================== Rutas (ORS/OSRM) ====================
-def _route_generate_osrm(src_lat: float, src_lon: float, dst_lat: float, dst_lon: float) -> List[Tuple[float,float]]:
-    url = f"https://router.project-osrm.org/route/v1/driving/{src_lon},{src_lat};{dst_lon},{dst_lat}?overview=full&geometries=geojson"
-    r = requests.get(url, timeout=20)
-    r.raise_for_status()
-    coords = r.json()["routes"][0]["geometry"]["coordinates"]  # [lon,lat]
-    return [(lat, lon) for lon, lat in coords]
 
-def _route_generate_ors(src_lat: float, src_lon: float, dst_lat: float, dst_lon: float) -> List[Tuple[float,float]]:
-    url = "https://api.openrouteservice.org/v2/directions/driving-car"
-    params = {"api_key": ORS_API_KEY, "start": f"{src_lon},{src_lat}", "end": f"{dst_lon},{dst_lat}"}
-    r = requests.get(url, params=params, timeout=20)
-    r.raise_for_status()
-    coords = r.json()["features"][0]["geometry"]["coordinates"]  # [lon,lat]
-    return [(lat, lon) for lon, lat in coords]
+# ==================== LÓGICA WS OFICIAL ====================
 
-def _generate_route(src_lat: float, src_lon: float, dst_lat: float, dst_lon: float) -> List[Tuple[float,float]]:
-    if ORS_API_KEY:
-        try:
-            return _route_generate_ors(src_lat, src_lon, dst_lat, dst_lon)
-        except Exception:
-            pass
-    return _route_generate_osrm(src_lat, src_lon, dst_lat, dst_lon)
+def _bearing_deg(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
+    """Ángulo (0–360) desde (lat1,lon1) hacia (lat2,lon2), 0 = Norte."""
+    lat1_rad = math.radians(lat1)
+    lat2_rad = math.radians(lat2)
+    dlon_rad = math.radians(lon2 - lon1)
+    x = math.sin(dlon_rad) * math.cos(lat2_rad)
+    y = math.cos(lat1_rad) * math.sin(lat2_rad) - math.sin(lat1_rad) * math.cos(lat2_rad) * math.cos(dlon_rad)
+    bearing = math.degrees(math.atan2(x, y))
+    return (bearing + 360.0) % 360.0
 
-# ==================== Paraderos OSM a lo largo de la ruta ====================
-def _bbox_for_route(route: List[Tuple[float,float]], margin_deg: float = 0.01) -> Tuple[float,float,float,float]:
-    lats=[p[0] for p in route]; lons=[p[1] for p in route]
-    return (min(lats)-margin_deg, min(lons)-margin_deg, max(lats)+margin_deg, max(lons)+margin_deg)  # S, W, N, E
 
-def _overpass_fetch_bus_stops(south: float, west: float, north: float, east: float) -> List[Dict[str,Any]]:
-    q = f"""
-    [out:json][timeout:25];
-    (
-      node["highway"="bus_stop"]({south},{west},{north},{east});
-      node["public_transport"="platform"]["bus"~".*"]({south},{west},{north},{east});
-    );
-    out body;
+def _fetch_official_positions(
+    service: Optional[str] = None,
+    direction: Optional[str] = None
+) -> List[Dict[str, Any]]:
     """
-    r = requests.post("https://overpass-api.de/api/interpreter", data={"data": q}, timeout=30)
-    r.raise_for_status()
-    data = r.json()
-    return data.get("elements", [])
+    Llama al Web Service JSON de posicionamiento (DyS) y devuelve
+    una lista normalizada de buses.
+    """
 
-def _meters_per_deg(lat: float) -> Tuple[float,float]:
-    m_per_deg_lat = 111_320.0
-    m_per_deg_lon = 40075000.0 * math.cos(math.radians(lat)) / 360.0
-    return m_per_deg_lat, m_per_deg_lon
+    if not WS_POS_URL:
+        raise RuntimeError("Configura WS_POS_URL en las variables de entorno")
 
-def _project_dist_along(route: List[Tuple[float,float]], pt: Tuple[float,float]) -> Tuple[float,float]:
-    """(dist_min_m, distancia_recorrida_km_al_pie) del punto respecto a la polilínea."""
-    px_lat, px_lon = pt
-    min_d = 1e18
-    acc_km = 0.0
-    best_along_km = 0.0
-    for i in range(len(route)-1):
-        a = route[i]; b = route[i+1]
-        lat_ref = (a[0]+b[0])/2.0
-        mlat, mlon = _meters_per_deg(lat_ref)
-        ax, ay = (a[1]*mlon, a[0]*mlat)
-        bx, by = (b[1]*mlon, b[0]*mlat)
-        px, py = (px_lon*mlon, px_lat*mlat)
+    # Parámetros de entrada al WS (ajusta los nombres si tu doc usa otros)
+    params: Dict[str, Any] = {}
+    if service:
+        params["servicio"] = service      # CAMBIA "servicio" si la API usa otro nombre
+    if direction:
+        params["sentido"] = direction     # CAMBIA "sentido" si la API usa otro nombre
 
-        vx, vy = (bx-ax, by-ay); wx, wy = (px-ax, py-ay)
-        seg_len2 = vx*vx + vy*vy
-        t = 0.0 if seg_len2==0 else max(0.0, min(1.0, (wx*vx + wy*vy)/seg_len2))
-        projx, projy = (ax + t*vx, ay + t*vy)
-        dist_m = math.hypot(px-projx, py-projy)
-        if dist_m < min_d:
-            min_d = dist_m
-            seg_km = geodesic(a, b).km
-            best_along_km = acc_km + seg_km * t
-        acc_km += geodesic(a, b).km
-    return min_d, best_along_km
+    headers: Dict[str, str] = {}
+    if WS_POS_TOKEN:
+        headers["Authorization"] = f"Bearer {WS_POS_TOKEN}"
 
-def _polyline_total_km(route: List[Tuple[float,float]]) -> float:
-    tot = 0.0
-    for i in range(len(route)-1):
-        tot += geodesic(route[i], route[i+1]).km
-    return tot
+    auth = (WS_POS_USER, WS_POS_PASS) if (WS_POS_USER and WS_POS_PASS) else None
 
-def _osm_stops_along_route(route: List[Tuple[float,float]]) -> List[Tuple[float,float,str]]:
-    """Paraderos reales (lat, lon, name) ordenados según sentido de la ruta."""
-    if not route or len(route)<2:
-        return []
-    s,w,n,e = _bbox_for_route(route, margin_deg=0.01)
+    resp = requests.get(
+        WS_POS_URL,
+        params=params,
+        headers=headers or None,
+        auth=auth,
+        timeout=20,
+    )
+    resp.raise_for_status()
+
     try:
-        elems = _overpass_fetch_bus_stops(s,w,n,e)
-    except Exception as e:
-        print("WARN Overpass:", e)
-        return []
+        data = resp.json()
+    except ValueError:
+        raise RuntimeError("La respuesta del WS no es JSON (revisa URL / método).")
 
-    total_km = _polyline_total_km(route)
-    items = []
-    for el in elems:
-        lat = float(el.get("lat")); lon = float(el.get("lon"))
-        name = (el.get("tags") or {}).get("name","Paradero")
-        d_m, along_km = _project_dist_along(route, (lat,lon))
-        if d_m <= STOP_MATCH_DIST_M and 0.0 <= along_km <= total_km:
-            items.append((d_m, along_km, lat, lon, name))
+    posiciones = data.get("posiciones") or data.get("Posiciones") or []
+    flat_records: List[Dict[str, Any]] = []
 
-    # Orden por distancia a lo largo
-    items.sort(key=lambda x: x[1])
-
-    # Deduplicación de paraderos muy cercanos
-    dedup = []
-    MIN_GAP_M = 80.0
-    for it in items:
-        if dedup and (it[1]-dedup[-1][1])*1000.0 < MIN_GAP_M:
-            if it[0] < dedup[-1][0]:
-                dedup[-1] = it
-        else:
-            dedup.append(it)
-
-    return [(lat, lon, name) for (_, _, lat, lon, name) in dedup]
-
-# ==================== Distancias / movimiento ====================
-def _remaining_route_km(bus: Dict[str, Any]) -> Optional[float]:
-    route = bus.get("route") or []
-    if not route or len(route)<2:
-        return None
-    idx = int(bus.get("idx",0))
-    lat, lon = bus["lat"], bus["lon"]
-    rem = 0.0
-    if idx < len(route)-1:
-        rem += geodesic((lat,lon), route[idx+1]).km
-        for i in range(idx+1, len(route)-1):
-            rem += geodesic(route[i], route[i+1]).km
-    return rem
-
-def _advance_along_route(bus: Dict[str, Any], step_km: float):
-    route = bus.get("route") or []
-    if not route or len(route)<2:
-        return False
-    idx = int(bus.get("idx",0))
-    lat, lon = bus["lat"], bus["lon"]
-    if idx==0 and geodesic((lat,lon), route[0]).km>0.01 and not bus.get("placed"):
-        lat, lon = route[0]
-        bus["placed"]=True
-    while step_km>0 and idx < len(route)-1:
-        nlat,nlon = route[idx+1]
-        dist_km = geodesic((lat,lon),(nlat,nlon)).km
-        if dist_km < 1e-6:
-            idx+=1
+    # Parsear cada item de 'posiciones' (cadenas con ';')
+    for item in posiciones:
+        if isinstance(item, dict):
+            flat_records.append(item)
             continue
-        if step_km >= dist_km:
-            lat,lon = nlat,nlon
-            step_km -= dist_km
-            idx+=1
-        else:
-            frac = step_km/dist_km
-            lat = lat+(nlat-lat)*frac
-            lon = lon+(nlon-lon)*frac
-            step_km=0
-    bus["lat"], bus["lon"], bus["idx"] = lat, lon, idx
-    if idx >= len(route)-1:
-        bus["arrived"]=True
-    return True
 
-def _advance_straight(bus: Dict[str, Any], destino: tuple, step_km: float):
-    lat,lon = bus["lat"], bus["lon"]
-    lat2,lon2 = destino
-    mlat, mlon = _meters_per_deg(lat if lat else lat2)
-    dlat,dlon = (lat2-lat, lon2-lon)
-    vx,vy = (dlon*mlon, dlat*mlat)
-    dist_km = math.hypot(vx,vy)/1000.0
-    if dist_km < 0.02:
-        bus["lat"],bus["lon"]=lat2,lon2
-        bus["arrived"]=True
-        return
-    ux,uy = (vx/(dist_km*1000), vy/(dist_km*1000))
-    move_km = min(step_km, dist_km)
-    lon += (move_km*1000*ux)/mlon
-    lat += (move_km*1000*uy)/mlat
-    bus["lat"],bus["lon"]=lat,lon
+        if isinstance(item, str):
+            tokens = [t.strip() for t in item.split(";") if t.strip() != ""]
+            for i in range(0, len(tokens), 12):
+                chunk = tokens[i:i + 12]
+                if len(chunk) < 12:
+                    break
 
-def _check_stop_and_dwell(bus: Dict[str, Any], now: float):
-    """Si el bus llegó a la próxima parada, se detiene (dwell) y reinicia el reloj."""
-    stops = bus.get("stops") or []
-    next_idx = int(bus.get("next_stop_idx", 0))
-    dwell_sec = int(bus.get("dwell_sec", AUTOSTOPS_DWELL_SEC))
-    if not stops or next_idx >= len(stops):
-        return
+                (
+                    fecha_gps,
+                    patente,
+                    lat_str,
+                    lon_str,
+                    vel_str,
+                    dir_geo,
+                    num_operador,
+                    nom_servicio,
+                    sentido,
+                    ruta_consola,
+                    ruta_sinoptico,
+                    fecha_insert,
+                ) = chunk
 
-    tgt = stops[next_idx]  # (lat, lon)
-    # ¿está dentro del radio de llegada?
-    if geodesic((bus["lat"], bus["lon"]), (tgt[0], tgt[1])).km <= STOP_RADIUS_KM and not bus.get("is_dwell", False):
-        # anclar posición exactamente en la parada
-        bus["lat"], bus["lon"] = tgt[0], tgt[1]
-        # activar dwell y avanzar el índice de la siguiente parada
-        bus["is_dwell"] = True
-        bus["dwell_until"] = now + max(0, dwell_sec)
-        bus["next_stop_idx"] = next_idx + 1
-        # MUY IMPORTANTE: reiniciar el reloj para que no se acumule tiempo de movimiento
-        bus["t"] = now
+                rec = {
+                    "Fecha Hora Gps UTC": fecha_gps,
+                    "Patente": patente,
+                    "Latitud": lat_str,
+                    "Longitud": lon_str,
+                    "Velocidad Instantánea": vel_str,
+                    "Direccion Geografica": dir_geo,
+                    "Numero Operador": num_operador,
+                    "Nombre Comercial del Servicio": nom_servicio,
+                    "Sentido": sentido,
+                    "Ruta Consola": ruta_consola,
+                    "Ruta Sinoptico": ruta_sinoptico,
+                    "Fecha Hora Insercion UTC": fecha_insert,
+                }
+                flat_records.append(rec)
 
-def _advance_bus(bus: Dict[str, Any], destino: tuple):
-    """Avanza el bus por su ruta o en línea recta, respetando dwell en paradas."""
-    now = time.time()
+        if isinstance(item, list):
+            for sub in item:
+                if isinstance(sub, dict):
+                    flat_records.append(sub)
+                elif isinstance(sub, str):
+                    tokens = [t.strip() for t in sub.split(";") if t.strip() != ""]
+                    for i in range(0, len(tokens), 12):
+                        chunk = tokens[i:i + 12]
+                        if len(chunk) < 12:
+                            break
+                        (
+                            fecha_gps,
+                            patente,
+                            lat_str,
+                            lon_str,
+                            vel_str,
+                            dir_geo,
+                            num_operador,
+                            nom_servicio,
+                            sentido,
+                            ruta_consola,
+                            ruta_sinoptico,
+                            fecha_insert,
+                        ) = chunk
+                        rec = {
+                            "Fecha Hora Gps UTC": fecha_gps,
+                            "Patente": patente,
+                            "Latitud": lat_str,
+                            "Longitud": lon_str,
+                            "Velocidad Instantánea": vel_str,
+                            "Direccion Geografica": dir_geo,
+                            "Numero Operador": num_operador,
+                            "Nombre Comercial del Servicio": nom_servicio,
+                            "Sentido": sentido,
+                            "Ruta Consola": ruta_consola,
+                            "Ruta Sinoptico": ruta_sinoptico,
+                            "Fecha Hora Insercion UTC": fecha_insert,
+                        }
+                        flat_records.append(rec)
 
-    # Si está detenido por dwell, mantener el reloj actualizado y no moverlo
-    if bus.get("is_dwell", False):
-        bus["t"] = now  # evitar acumulación de dt mientras está detenido
-        if now < float(bus.get("dwell_until", 0)):
-            return
-        # terminó el dwell: limpiar flags y esperar al siguiente ciclo para mover
-        bus["is_dwell"] = False
-        bus["dwell_until"] = None
-        bus["t"] = now
-        return
+    # Último registro por patente
+    by_patente: Dict[str, Dict[str, Any]] = {}
+    for rec in flat_records:
+        patente = rec.get("Patente") or rec.get("patente") or rec.get("PATENTE")
+        if not patente:
+            continue
+        by_patente[str(patente)] = rec
 
-    # Movimiento normal
-    dt = now - bus.get("t", now)
-    bus["t"] = now
-    if dt <= 0:
-        return
+    def _to_float(value) -> Optional[float]:
+        if value is None:
+            return None
+        try:
+            return float(str(value).replace(",", "."))
+        except Exception:
+            return None
 
-    speed = float(bus.get("speed_kmh", 25.0))
-    if speed <= 0:
-        return
+    result: List[Dict[str, Any]] = []
 
-    step_km = speed * dt / 3600.0
+    headings_map = {0: 0.0, 1: 45.0, 2: 90.0, 3: 135.0, 4: 180.0, 5: 225.0, 6: 270.0, 7: 315.0}
 
-    used_route = _advance_along_route(bus, step_km)
-    if not used_route:
-        _advance_straight(bus, destino, step_km)
+    for patente, rec in by_patente.items():
+        lat = _to_float(rec.get("Latitud"))
+        lon = _to_float(rec.get("Longitud"))
+        if lat is None or lon is None:
+            continue
 
-    # Chequear si toca detenerse en la próxima parada
-    _check_stop_and_dwell(bus, now)
+        speed = _to_float(rec.get("Velocidad Instantánea")) or 20.0
+        service_code = rec.get("Nombre Comercial del Servicio")
+        sentido = rec.get("Sentido")
 
-# ==================== Endpoints básicos ====================
+        dir_raw = rec.get("Direccion Geografica")
+        heading_idx: Optional[int] = None
+        heading_deg: Optional[float] = None
+        if dir_raw is not None and str(dir_raw).strip() != "":
+            try:
+                heading_idx = int(str(dir_raw).strip())
+                heading_deg = headings_map.get(heading_idx % 8)
+            except ValueError:
+                pass
+
+        result.append({
+            "bus_id": patente,
+            "lat": lat,
+            "lon": lon,
+            "speed_kmh": speed,
+            "service": service_code,
+            "direction": sentido,
+            "heading_idx": heading_idx,
+            "heading_deg": heading_deg,
+            "raw": rec,
+        })
+
+    # Filtro opcional por servicio/sentido
+    if service:
+        result = [
+            b for b in result
+            if str(b.get("service") or "").upper() == str(service).upper()
+        ]
+    if direction:
+        result = [
+            b for b in result
+            if str(b.get("direction") or "").upper() == str(direction).upper()
+        ]
+
+    return result
+
+
+# ==================== ENDPOINTS ====================
+
 @app.route("/")
 def index():
-    return render_template_string(INDEX_HTML)
+  return render_template_string(
+      INDEX_HTML,
+      center_lat=DEFAULT_CENTER[0],
+      center_lon=DEFAULT_CENTER[1],
+  )
 
-@app.route("/get_destination")
-def get_destination():
-    return jsonify({"destino": DESTINO})
 
-@app.route("/set_destination", methods=["POST"])
-def set_destination():
-    global DESTINO
-    d = request.get_json(force=True)
-    DESTINO = (float(d["lat"]), float(d["lon"]))
-    return jsonify({"message":"ok","destino":DESTINO})
-
-# ==================== Ocupación ====================
-@app.route("/occupancy", methods=["POST"])
-def occupancy():
-    d = request.get_json(force=True, silent=True) or {}
-    bus_id=d.get("bus_id")
-    count=d.get("count")
-    status=d.get("status")
-    ts=d.get("ts")
-    cap=int(d.get("capacity",40))
-    if not bus_id or count is None or not status or not ts:
-        return jsonify({"ok":False,"error":"payload incompleto"}),400
-    pct=min(100.0,(int(count)/cap)*100.0)
-    OCUPACION[str(bus_id)]={"count":int(count),"status":str(status),"ts":str(ts),"capacity":cap,"pct":pct}
-    con=sqlite3.connect(DB);cur=con.cursor()
-    cur.execute("INSERT INTO ocupacion(bus_id,ts,count,status,capacity,pct) VALUES(?,?,?,?,?,?)",
-                (bus_id,ts,int(count),status,cap,pct))
-    con.commit();con.close()
-    return jsonify({"ok":True})
-
-@app.route("/occupancy/list")
-def occupancy_list():
-    return jsonify(OCUPACION)
-
-# ==================== Simulador ====================
-@app.route("/sim/start", methods=["POST"])
-def sim_start():
-    d=request.get_json(force=True)
-    bus_id=str(d.get("bus_id","bus001"))
-    lat=float(d["lat"])
-    lon=float(d["lon"])
-    speed=float(d.get("speed_kmh",25.0))
-
-    BUSES[bus_id]={"lat":lat,"lon":lon,"speed_kmh":speed,"t":time.time(),
-                   "arrived":False,"route":None,"idx":0,
-                   "stops":[], "stop_names":[], "next_stop_idx":0,
-                   "dwell_sec":AUTOSTOPS_DWELL_SEC,"is_dwell":False,"dwell_until":None}
-
-    # 1) Ruta
-    points: List[Tuple[float,float]] = []
+@app.route("/api/buses_near_stop")
+def api_buses_near_stop():
     try:
-        points = _generate_route(lat,lon, DESTINO[0],DESTINO[1])
-        if points and len(points)>=2:
-            BUSES[bus_id]["route"]=points
-            BUSES[bus_id]["idx"]=0
-            BUSES[bus_id]["placed"]=False
+        stop_lat = float(request.args["stop_lat"])
+        stop_lon = float(request.args["stop_lon"])
+    except (KeyError, ValueError):
+        return jsonify({"ok": False, "error": "stop_lat y stop_lon son obligatorios"}), 400
+
+    service = request.args.get("service")
+    direction = request.args.get("direction")
+
+    try:
+        buses_raw = _fetch_official_positions(service, direction)
     except Exception as e:
-        print("WARN ruta:", e)
+        return jsonify({"ok": False, "error": str(e)}), 500
 
-    # 2) Paraderos reales OSM sobre la ruta
-    auto_stops: List[Tuple[float,float,str]] = []
-    if points and len(points)>=2:
-        try:
-            auto_stops = _osm_stops_along_route(points)
-        except Exception as e:
-            print("WARN paraderos OSM:", e)
+    MAX_DIST_KM = 5.0
+    out: List[Dict[str, Any]] = []
 
-    if auto_stops:
-        BUSES[bus_id]["stops"] = [(a[0],a[1]) for a in auto_stops]
-        BUSES[bus_id]["stop_names"] = [a[2] for a in auto_stops]
-        BUSES[bus_id]["next_stop_idx"] = 0
+    for b in buses_raw:
+        lat = b["lat"]
+        lon = b["lon"]
+        dist_km = geodesic((lat, lon), (stop_lat, stop_lon)).km
+        if dist_km > MAX_DIST_KM:
+            continue
 
-    return jsonify({"ok":True,"bus_id":bus_id,"points":points,"auto_stops":auto_stops,"dwell_sec":AUTOSTOPS_DWELL_SEC})
+        speed = max(float(b.get("speed_kmh", 20.0)), 1e-3)
+        eta_min = (dist_km / speed) * 60.0
 
-@app.route("/sim/stop", methods=["POST"])
-def sim_stop():
-    d=request.get_json(force=True, silent=True) or {}
-    bus_id=str(d.get("bus_id",""))
-    if bus_id in BUSES:
-        del BUSES[bus_id]
-    return jsonify({"ok":True})
+        heading_deg = b.get("heading_deg")
+        angle_to_stop = None
+        approaching_stop = None
+        if heading_deg is not None:
+            bearing_to_stop = _bearing_deg(lat, lon, stop_lat, stop_lon)
+            diff = abs(heading_deg - bearing_to_stop)
+            if diff > 180.0:
+                diff = 360.0 - diff
+            angle_to_stop = diff
+            approaching_stop = diff <= 90.0
 
-@app.route("/sim/buses")
-def sim_buses():
-    out=[]; now=time.time()
-    for bus_id,bus in list(BUSES.items()):
-        _advance_bus(bus, DESTINO)
-
-        dist_route = _remaining_route_km(bus)
-        if dist_route is None:
-            dist_km = geodesic((bus["lat"],bus["lon"]), DESTINO).km
-            distance_kind="straight"
-        else:
-            dist_km = max(0.0, dist_route)
-            distance_kind="route"
-
-        speed=max(float(bus.get("speed_kmh",25.0)),1e-6)
-        eta_min=(dist_km/speed)*60.0
-
-        dwell_remaining=0.0
-        if bus.get("is_dwell",False) and bus.get("dwell_until"):
-            dwell_remaining=max(0.0, float(bus["dwell_until"])-now)
-        total=len(bus.get("stops") or []); nxt=int(bus.get("next_stop_idx",0))
-        remain=max(0,total-nxt); dwell_each=int(bus.get("dwell_sec",AUTOSTOPS_DWELL_SEC))
-        eta_min += (dwell_remaining + remain*dwell_each)/60.0
+        if heading_deg is not None and approaching_stop is False:
+            continue
 
         out.append({
-            "bus_id":bus_id,"lat":bus["lat"],"lon":bus["lon"],"speed_kmh":bus.get("speed_kmh",25.0),
-            "distance_km":dist_km,"eta_min":eta_min,"arrived":bool(bus.get("arrived",False)),
-            "has_route":bool(bus.get("route")),"distance_kind":distance_kind,
-            "is_dwell":bool(bus.get("is_dwell",False)),"dwell_remaining_sec":dwell_remaining,
-            "stops_total":total,"stops_next_idx":nxt,"stops_remaining":remain
+            "bus_id": b["bus_id"],
+            "service": b.get("service"),
+            "direction": b.get("direction"),
+            "lat": lat,
+            "lon": lon,
+            "speed_kmh": speed,
+            "distance_to_stop_km": dist_km,
+            "eta_to_stop_min": eta_min,
+            "heading_idx": b.get("heading_idx"),
+            "heading_deg": heading_deg,
+            "angle_to_stop_deg": angle_to_stop,
+            "approaching_stop": approaching_stop,
+            "recommended": False,  # aquí no recomendamos, solo mostramos
         })
-    return jsonify({"ok":True,"destino":DESTINO,"buses":out})
 
-# ==================== Fallback RED no oficial ====================
-@app.route("/red/arrivals/<stop_id>")
-def red_arrivals(stop_id:str):
+    out.sort(key=lambda x: x["eta_to_stop_min"])
+    return jsonify({"ok": True, "stop": [stop_lat, stop_lon], "buses": out})
+
+
+@app.route("/api/recommendations")
+def api_recommendations():
     try:
-        r=requests.get(f"https://api.xor.cl/red/bus-stop/{stop_id}",timeout=10)
-        r.raise_for_status()
-        return jsonify({"ok":True,"data":r.json()})
-    except Exception as e:
-        return jsonify({"ok":False,"error":str(e)}),500
+        stop_lat = float(request.args["stop_lat"])
+        stop_lon = float(request.args["stop_lon"])
+        dest_lat = float(request.args["dest_lat"])
+        dest_lon = float(request.args["dest_lon"])
+    except (KeyError, ValueError):
+        return jsonify({"ok": False, "error": "stop_lat, stop_lon, dest_lat, dest_lon son obligatorios"}), 400
 
-# ==================== Main ====================
-if __name__=="__main__":
-    print("Servidor iniciado. Abre http://127.0.0.1:5000  (o http://<IP_LAN>:5000)")
+    service = request.args.get("service")
+    direction = request.args.get("direction")
+
+    try:
+        buses_raw = _fetch_official_positions(service, direction)
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+    MAX_DIST_KM = 5.0
+    bearing_to_dest = _bearing_deg(stop_lat, stop_lon, dest_lat, dest_lon)
+
+    out: List[Dict[str, Any]] = []
+
+    for b in buses_raw:
+        lat = b["lat"]
+        lon = b["lon"]
+        dist_to_stop = geodesic((lat, lon), (stop_lat, stop_lon)).km
+        if dist_to_stop > MAX_DIST_KM:
+            continue
+
+        speed = max(float(b.get("speed_kmh", 20.0)), 1e-3)
+        eta_stop = (dist_to_stop / speed) * 60.0
+
+        heading_deg = b.get("heading_deg")
+        heading_idx = b.get("heading_idx")
+
+        angle_to_stop = None
+        approaching_stop = None
+        angle_to_dest = None
+        recommended = False
+
+        if heading_deg is not None:
+            bearing_to_stop = _bearing_deg(lat, lon, stop_lat, stop_lon)
+            diff_stop = abs(heading_deg - bearing_to_stop)
+            if diff_stop > 180.0:
+                diff_stop = 360.0 - diff_stop
+            angle_to_stop = diff_stop
+            approaching_stop = diff_stop <= 90.0
+
+            diff_dest = abs(heading_deg - bearing_to_dest)
+            if diff_dest > 180.0:
+                diff_dest = 360.0 - diff_dest
+            angle_to_dest = diff_dest
+
+            if approaching_stop and diff_dest <= 90.0 and eta_stop <= 30.0:
+                recommended = True
+
+        if heading_deg is not None and approaching_stop is False:
+            continue
+
+        out.append({
+            "bus_id": b["bus_id"],
+            "service": b.get("service"),
+            "direction": b.get("direction"),
+            "lat": lat,
+            "lon": lon,
+            "speed_kmh": speed,
+            "distance_to_stop_km": dist_to_stop,
+            "eta_to_stop_min": eta_stop,
+            "heading_idx": heading_idx,
+            "heading_deg": heading_deg,
+            "angle_to_stop_deg": angle_to_stop,
+            "angle_to_dest_deg": angle_to_dest,
+            "approaching_stop": approaching_stop,
+            "recommended": recommended,
+        })
+
+    out.sort(key=lambda b: (not b["recommended"], b["eta_to_stop_min"]))
+
+    return jsonify({
+        "ok": True,
+        "stop": [stop_lat, stop_lon],
+        "dest": [dest_lat, dest_lon],
+        "bearing_stop_to_dest_deg": bearing_to_dest,
+        "buses": out,
+    })
+
+
+# ==================== MAIN ====================
+
+if __name__ == "__main__":
+    print("Servidor iniciado. Abre http://127.0.0.1:5000")
     app.run(host="0.0.0.0", port=5000, debug=True)
