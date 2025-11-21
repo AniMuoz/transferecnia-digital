@@ -5,7 +5,7 @@ from ultralytics import YOLO
 import requests
 
 TRACKER_URL = "http://127.0.0.1:5000"  # donde corre tracker_server
-BUS_ID = "TURBUS"  # ID de la micro que estás monitoreando
+BUS_ID = "bus001"  # ID de la micro que estás monitoreando
 
 def estado_micro(x):
     if x <= 20:
