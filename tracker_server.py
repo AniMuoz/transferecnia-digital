@@ -245,8 +245,8 @@ INDEX_HTML = r"""
             <td>${b.distance_km.toFixed(2)} km</td>
             <td>${b.eta_min.toFixed(1)} min</td>
             <td>${si}</td>
-            <td>${occCount}</td>
-            <td>${occPct}</td>
+            <!-- <td>${occCount}</td> -->
+            <!-- <td>${occPct}</td> -->
             <td>${occStatus}</td>
             <td>${state}</td>
           </tr>`;
