@@ -55,7 +55,7 @@ INDEX_HTML = r"""
   .row{display:flex;gap:8px}.row>*{flex:1}
   input,button{padding:8px}
   #map{height:420px;border-radius:8px}
-  table{width:100%;border-collapse:collapse}th,td{padding:6px;border-bottom:1px solid #eee}
+  table{width:100%;border-collapse:collapse}th,td{padding:6px;border-bottom:1px solid #eee;text-align:center}
   .pill{display:inline-block;padding:2px 6px;border-radius:999px;background:#eee;font-size:12px;margin-left:4px}
 </style>
 </head>
@@ -97,11 +97,6 @@ INDEX_HTML = r"""
 </div>
 
 <div class="card">
-  <h3>Ocupación (desde detector)</h3>
-  <div id="occ"></div>
-</div>
-
-<div class="card">
   <h3>RED (no oficial) — Próximos buses por paradero</h3>
   <div class="row">
     <input id="stopId" placeholder="PA433">
@@ -118,103 +113,172 @@ INDEX_HTML = r"""
   const busIdEl=document.getElementById('busId'); const speedEl=document.getElementById('speed');
   const srcLatEl=document.getElementById('srcLat'); const srcLonEl=document.getElementById('srcLon');
   const startSimBtn=document.getElementById('startSimBtn'); const stopSimBtn=document.getElementById('stopSimBtn');
-  const arrivalsEl=document.getElementById('arrivals'); const occEl=document.getElementById('occ');
+  const arrivalsEl=document.getElementById('arrivals');
   const stopIdEl=document.getElementById('stopId'); const fetchStopBtn=document.getElementById('fetchStopBtn'); const stopDataEl=document.getElementById('stopData');
 
-  let map=L.map('map'); L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+  let map=L.map('map'); 
+  L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
+
   let destMarker=L.marker([0,0],{title:'Paradero destino'}).addTo(map);
   let busMarkers={}, polylines={}, stopMarkers={};
 
   fetch('/get_destination').then(r=>r.json()).then(j=>{
-    const [la,lo]=j.destino; destLat.value=la; destLon.value=lo; destMarker.setLatLng([la,lo]); map.setView([la,lo],13);
+    const [la,lo]=j.destino; 
+    destLat.value=la; 
+    destLon.value=lo; 
+    destMarker.setLatLng([la,lo]); 
+    map.setView([la,lo],13);
   });
 
   setDestBtn.onclick=()=>{
     const la=parseFloat(destLat.value), lo=parseFloat(destLon.value);
     if(isNaN(la)||isNaN(lo)){alert('Destino inválido');return;}
-    fetch('/set_destination',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({lat:la,lon:lo})})
-      .then(()=>{destMarker.setLatLng([la,lo]); map.setView([la,lo],13);});
+    fetch('/set_destination',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({lat:la,lon:lo})
+    }).then(()=>{
+      destMarker.setLatLng([la,lo]); 
+      map.setView([la,lo],13);
+    });
   };
 
   startSimBtn.onclick=async ()=>{
-    const id=(busIdEl.value||'bus001').trim(); const sp=parseFloat(speedEl.value||'25');
+    const id=(busIdEl.value||'bus001').trim(); 
+    const sp=parseFloat(speedEl.value||'25');
     const la=parseFloat(srcLatEl.value), lo=parseFloat(srcLonEl.value);
     if(isNaN(la)||isNaN(lo)){alert('Origen inválido');return;}
-    const res=await fetch('/sim/start',{method:'POST',headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({bus_id:id, lat:la, lon:lo, speed_kmh:sp})});
-    const j=await res.json(); if(!j.ok){alert('No se pudo iniciar');return;}
-    if(j.points?.length>=2){ if(polylines[id]) map.removeLayer(polylines[id]);
+
+    const res=await fetch('/sim/start',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bus_id:id, lat:la, lon:lo, speed_kmh:sp})
+    });
+
+    const j=await res.json(); 
+    if(!j.ok){alert('No se pudo iniciar');return;}
+
+    if(j.points?.length>=2){ 
+      if(polylines[id]) map.removeLayer(polylines[id]);
       polylines[id]=L.polyline(j.points,{weight:4,opacity:0.75}).addTo(map);
       map.fitBounds(polylines[id].getBounds().pad(0.3));
     }
-    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); }
+
+    if(stopMarkers[id]){
+      for(const m of stopMarkers[id]) map.removeLayer(m);
+    }
+
     stopMarkers[id]=[];
     (j.auto_stops||[]).forEach(s=>{
       const mk=L.circleMarker([s[0],s[1]],{radius:5,opacity:0.9}).addTo(map);
-      mk.bindTooltip(s[2] ? `🚌 ${s[2]}` : 'Paradero'); stopMarkers[id].push(mk);
+      mk.bindTooltip(s[2] ? `🚌 ${s[2]}` : 'Paradero');
+      stopMarkers[id].push(mk);
     });
   };
 
   stopSimBtn.onclick=async ()=>{
     const id=(busIdEl.value||'bus001').trim();
-    await fetch('/sim/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({bus_id:id})});
+    await fetch('/sim/stop',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({bus_id:id})
+    });
+
     if(busMarkers[id]){map.removeLayer(busMarkers[id]); delete busMarkers[id];}
     if(polylines[id]){map.removeLayer(polylines[id]); delete polylines[id];}
-    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); delete stopMarkers[id]; }
+    if(stopMarkers[id]){
+      for(const m of stopMarkers[id]) map.removeLayer(m);
+      delete stopMarkers[id];
+    }
   };
 
   async function refreshBuses(){
     try{
-      const j=await (await fetch('/sim/buses')).json(); if(!j.ok) return;
-      const [dla,dlo]=j.destino; destMarker.setLatLng([dla,dlo]);
+      const j=await (await fetch('/sim/buses')).json(); 
+      if(!j.ok) return;
+
+      const [dla,dlo]=j.destino; 
+      destMarker.setLatLng([dla,dlo]);
+
       const list=[...j.buses].sort((a,b)=>a.eta_min-b.eta_min);
-      let html='<table><tr><th>Bus</th><th>Dist</th><th>ETA</th><th>Paradas</th><th>Estado</th></tr>';
-      if(list.length===0){html+='<tr><td colspan=5><i>Sin buses</i></td></tr>'; statusEl.textContent='Estado: sin buses';}
-      else{
+
+      let html=`<table>
+        <tr>
+          <th>Bus</th>
+          <th>Dist</th>
+          <th>ETA</th>
+          <th>Paradas</th>
+          <th>Ocupación</th>
+          <th>%</th>
+          <th>Status</th>
+          <th>Estado</th>
+        </tr>`;
+
+      if(list.length===0){
+        html+=`<tr><td colspan="8"><i>Sin buses</i></td></tr>`;
+        statusEl.textContent='Estado: sin buses';
+      } else {
         statusEl.textContent=`Próxima llegada: ${list[0].bus_id} en ${list[0].eta_min.toFixed(1)} min`;
+
         for(const b of list){
           const id=b.bus_id, la=b.lat, lo=b.lon;
-          if(!busMarkers[id]) busMarkers[id]=L.marker([la,lo],{title:id}).addTo(map); else busMarkers[id].setLatLng([la,lo]);
+
+          if(!busMarkers[id]) 
+            busMarkers[id]=L.marker([la,lo],{title:id}).addTo(map); 
+          else 
+            busMarkers[id].setLatLng([la,lo]);
+
           let tip=`${id}<br>Dist: ${b.distance_km.toFixed(2)} km<br>ETA: ${b.eta_min.toFixed(1)} min`;
           if(b.is_dwell) tip+=`<br><span class="pill">Detenido</span>`;
           busMarkers[id].bindTooltip(tip);
+
           const si=b.stops_total>0?`${b.stops_next_idx}/${b.stops_total}`:'—';
           const state=b.arrived?'En paradero':(b.is_dwell?'En parada':(b.has_route?'En ruta':'Recta'));
-          html+=`<tr><td><b>${id}</b></td><td>${b.distance_km.toFixed(2)} km</td><td>${b.eta_min.toFixed(1)} min</td><td>${si}</td><td>${state}</td></tr>`;
+
+          const occCount = b.occ_count ?? '—';
+          const occPct = b.occ_pct != null ? `${b.occ_pct}%` : '—';
+          const occStatus = b.occ_status ?? '—';
+
+          html+=`
+          <tr>
+            <td><b>${id}</b></td>
+            <td>${b.distance_km.toFixed(2)} km</td>
+            <td>${b.eta_min.toFixed(1)} min</td>
+            <td>${si}</td>
+            <td>${occCount}</td>
+            <td>${occPct}</td>
+            <td>${occStatus}</td>
+            <td>${state}</td>
+          </tr>`;
         }
       }
-      html+='</table>'; arrivalsEl.innerHTML=html;
-    }catch(_){}
-  }
-  setInterval(refreshBuses, 1000); refreshBuses();
 
-  async function refreshOcc(){
-    try{
-      const [occ,sim]=await Promise.all([fetch('/occupancy/list').then(r=>r.json()), fetch('/sim/buses').then(r=>r.json())]);
-      const simB=sim.ok?sim.buses:[];
-      let html='<table><tr><th>Bus</th><th>Count</th><th>%</th><th>Status</th><th>Dist</th><th>ETA</th><th>TS</th></tr>';
-      const keys=Object.keys(occ);
-      if(keys.length===0) html+='<tr><td colspan=7><i>Sin datos</i></td></tr>';
-      for(const [id,v] of Object.entries(occ)){
-        const cap=v.capacity||40; const pct=Math.min(100,Math.round((v.count/cap)*100));
-        const simR=simB.find(b=>b.bus_id===id); const dist=simR?`${simR.distance_km.toFixed(2)} km`:'—'; const eta=simR?`${simR.eta_min.toFixed(1)} min`:'—';
-        html+=`<tr><td><b>${id}</b></td><td>${v.count}</td><td>${pct}%</td><td>${v.status}</td><td>${dist}</td><td>${eta}</td><td><small>${v.ts}</small></td></tr>`;
-      }
-      html+='</table>'; occEl.innerHTML=html;
-    }catch(_){ occEl.textContent='Error'; }
+      html+='</table>'; 
+      arrivalsEl.innerHTML=html;
+
+    } catch(e){}
   }
-  setInterval(refreshOcc, 5000); refreshOcc();
+
+  setInterval(refreshBuses, 1000); 
+  refreshBuses();
 
   fetchStopBtn.onclick=async()=>{
-    const s=(stopIdEl.value||'').trim(); if(!s){alert('Ingresa stop_id');return;}
-    try{ const j=await (await fetch('/red/arrivals/'+encodeURIComponent(s))).json(); stopDataEl.innerHTML='<pre>'+JSON.stringify(j.data||j,null,2)+'</pre>'; }
-    catch(_){ stopDataEl.textContent='Error'; }
+    const s=(stopIdEl.value||'').trim(); 
+    if(!s){alert('Ingresa stop_id');return;}
+
+    try{ 
+      const j=await (await fetch('/red/arrivals/'+encodeURIComponent(s))).json(); 
+      stopDataEl.innerHTML='<pre>'+JSON.stringify(j.data||j,null,2)+'</pre>'; 
+    } catch(_){ 
+      stopDataEl.textContent='Error'; 
+    }
   };
 })();
 </script>
 </body>
 </html>
 """
+
 
 # ==================== Rutas (ORS/OSRM) ====================
 def _route_generate_osrm(src_lat: float, src_lon: float, dst_lat: float, dst_lon: float) -> List[Tuple[float,float]]:
@@ -554,36 +618,71 @@ def sim_stop():
 
 @app.route("/sim/buses")
 def sim_buses():
-    out=[]; now=time.time()
-    for bus_id,bus in list(BUSES.items()):
+    out = []
+    now = time.time()
+
+    for bus_id, bus in list(BUSES.items()):
         _advance_bus(bus, DESTINO)
 
         dist_route = _remaining_route_km(bus)
         if dist_route is None:
-            dist_km = geodesic((bus["lat"],bus["lon"]), DESTINO).km
-            distance_kind="straight"
+            dist_km = geodesic((bus["lat"], bus["lon"]), DESTINO).km
+            distance_kind = "straight"
         else:
             dist_km = max(0.0, dist_route)
-            distance_kind="route"
+            distance_kind = "route"
 
-        speed=max(float(bus.get("speed_kmh",25.0)),1e-6)
-        eta_min=(dist_km/speed)*60.0
+        speed = max(float(bus.get("speed_kmh", 25.0)), 1e-6)
+        eta_min = (dist_km / speed) * 60.0
 
-        dwell_remaining=0.0
-        if bus.get("is_dwell",False) and bus.get("dwell_until"):
-            dwell_remaining=max(0.0, float(bus["dwell_until"])-now)
-        total=len(bus.get("stops") or []); nxt=int(bus.get("next_stop_idx",0))
-        remain=max(0,total-nxt); dwell_each=int(bus.get("dwell_sec",AUTOSTOPS_DWELL_SEC))
-        eta_min += (dwell_remaining + remain*dwell_each)/60.0
+        dwell_remaining = 0.0
+        if bus.get("is_dwell", False) and bus.get("dwell_until"):
+            dwell_remaining = max(0.0, float(bus["dwell_until"]) - now)
+
+        total = len(bus.get("stops") or [])
+        nxt = int(bus.get("next_stop_idx", 0))
+        remain = max(0, total - nxt)
+        dwell_each = int(bus.get("dwell_sec", AUTOSTOPS_DWELL_SEC))
+
+        eta_min += (dwell_remaining + remain * dwell_each) / 60.0
+
+        # ---- OCUPACIÓN UNIDA AQUÍ ----
+        occ = OCUPACION.get(bus_id, {})
+        occ_count = occ.get("count")
+        occ_status = occ.get("status")
+        occ_capacity = occ.get("capacity", 40)
+
+        occ_pct = None
+        if occ_count is not None and occ_capacity:
+            occ_pct = round((occ_count / occ_capacity) * 100)
 
         out.append({
-            "bus_id":bus_id,"lat":bus["lat"],"lon":bus["lon"],"speed_kmh":bus.get("speed_kmh",25.0),
-            "distance_km":dist_km,"eta_min":eta_min,"arrived":bool(bus.get("arrived",False)),
-            "has_route":bool(bus.get("route")),"distance_kind":distance_kind,
-            "is_dwell":bool(bus.get("is_dwell",False)),"dwell_remaining_sec":dwell_remaining,
-            "stops_total":total,"stops_next_idx":nxt,"stops_remaining":remain
+            "bus_id": bus_id,
+            "lat": bus["lat"],
+            "lon": bus["lon"],
+            "speed_kmh": bus.get("speed_kmh", 25.0),
+            "distance_km": dist_km,
+            "eta_min": eta_min,
+            "arrived": bool(bus.get("arrived", False)),
+            "has_route": bool(bus.get("route")),
+            "distance_kind": distance_kind,
+            "is_dwell": bus.get("is_dwell", False),
+            "stops_total": total,
+            "stops_next_idx": nxt,
+
+            # 👇 CAMPOS OCUPACIÓN
+            "occ_count": occ_count,
+            "occ_capacity": occ_capacity if occ_count is not None else None,
+            "occ_pct": occ_pct,
+            "occ_status": occ_status
         })
-    return jsonify({"ok":True,"destino":DESTINO,"buses":out})
+
+    return jsonify({
+        "ok": True,
+        "destino": DESTINO,
+        "buses": out
+    })
+
 
 # ==================== Fallback RED no oficial ====================
 @app.route("/red/arrivals/<stop_id>")
