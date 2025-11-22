@@ -4,7 +4,6 @@
 <meta charset="utf-8" />
 <title>Simulador buses → paradero</title>
 <meta name="viewport" content="width=device-width,initial-scale=1" />
-
 <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
 <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
 
@@ -18,12 +17,11 @@
   --danger:#ef4444;
   --text:#e5e7eb;
   --muted:#9ca3af;
+  --accent:#7c3aed;
 }
 
-* {
-  box-sizing: border-box;
-}
-
+/* base */
+*{box-sizing:border-box}
 body{
   font-family: "Segoe UI", Inter, system-ui, sans-serif;
   margin:0;
@@ -34,216 +32,123 @@ body{
   max-width:1100px;
   margin:auto;
 }
+h1{font-size:1.6rem;margin:6px 0 12px;text-align:center;letter-spacing:0.5px}
+h3{margin-top:0;font-weight:600;color:var(--secondary)}
 
-h1{
-  font-size:1.6rem;
-  margin:6px 0 12px;
-  text-align:center;
-  letter-spacing:0.5px;
-}
-
-h3{
-  margin-top:0;
-  font-weight:600;
-  color:var(--secondary);
-}
-
-/* ESTADO SUPERIOR */
+/* status */
 #status{
   background:linear-gradient(90deg, #1e3a8a, #0f172a);
-  padding:10px 14px;
-  border-radius:10px;
-  margin-bottom:16px;
-  font-size:0.95rem;
-  text-align:center;
-  box-shadow:0 0 10px rgba(56,189,248,0.3);
+  padding:10px 14px;border-radius:10px;margin-bottom:16px;
+  font-size:0.95rem;text-align:center;box-shadow:0 0 10px rgba(56,189,248,0.3);
 }
 
-/* TARJETAS */
+/* cards */
 .card{
   background:linear-gradient(180deg, var(--card), #020617);
-  border-radius:18px;
-  padding:16px 16px 18px;
-  margin:14px 0;
+  border-radius:18px;padding:16px 16px 18px;margin:14px 0;
   box-shadow: 0 10px 20px rgba(0,0,0,0.45);
   border:1px solid rgba(255,255,255,0.04);
 }
 
-/* FILAS */
-.row{
-  display:flex;
-  gap:10px;
-  margin-bottom:10px;
-}
-
+/* layout */
+.row{display:flex;gap:10px;margin-bottom:10px}
 .row>*{flex:1}
+label{display:block;font-size:0.8rem;margin-bottom:3px;color:var(--muted)}
+input{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #1f2937;background:#020617;color:var(--text);
+  outline:none;transition:0.2s}
+input:focus{border:1px solid var(--secondary);box-shadow:0 0 0 2px rgba(56,189,248,.15)}
+button{padding:12px;border-radius:14px;border:none;background:linear-gradient(135deg,var(--primary),#16a34a);color:#022c22;font-weight:700;cursor:pointer}
+button:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(34,197,94,0.22)}
+#stopSimBtn{background:linear-gradient(135deg,var(--danger),#b91c1c);color:#fff}
+small{color:var(--muted);display:block;margin-top:6px}
 
-label{
-  display:block;
-  font-size:0.8rem;
-  margin-bottom:3px;
-  color:var(--muted);
+/* map */
+#map{height:420px;border-radius:20px;overflow:hidden;border:2px solid #1f2937;box-shadow:0 0 18px rgba(56,189,248,.12)}
+
+/* table */
+table{width:100%;border-collapse:collapse;margin-top:10px;font-size:0.94rem}
+th{background:#020617;padding:10px 6px;color:var(--secondary);font-weight:600;border-bottom:1px solid #1f2937}
+td{padding:8px 6px;border-bottom:1px solid #1f2937;text-align:center}
+tr:nth-child(even){background:#020617}
+
+/* pill */
+.pill{display:inline-block;padding:4px 10px;border-radius:999px;background:linear-gradient(135deg,#38bdf8,#0ea5e9);color:#001018;font-size:12px;margin-left:4px;font-weight:600}
+
+/* -------------------
+   ESTADO & OCUPACIÓN
+   ------------------- */
+/* Estado (colores semáforo) */
+.state-en-ruta{ color:#60fa9b; font-weight:700 }     /* azul claro */
+.state-en-parada{ color:#e7eb26; font-weight:700 }   /* ámbar */
+.state-en-paradero{ color:#b6b910; font-weight:700 } /* verde */
+.state-detenido{ color:#ef4444; font-weight:700 }    /* rojo */
+.state-sin-ruta{ color:var(--muted); font-weight:600 }
+
+/* Ocupación */
+.occ-baja{ color:#10b981; font-weight:700 }   /* verde */
+.occ-media{ color:#f59e0b; font-weight:700 } /* ámbar */
+.occ-alta{ color:#f97316; font-weight:700 }  /* naranja */
+.occ-critica{ color:#ef4444; font-weight:800 }/* rojo fuerte */
+.occ-unknown{ color:var(--muted) }
+
+/* ETA change highlights (fondo suave) */
+.eta-up{ animation: etaUpFlash 1.2s ease; background: linear-gradient(90deg, rgba(239,68,68,0.06), transparent) }
+.eta-down{ animation: etaDownFlash 1.2s ease; background: linear-gradient(90deg, rgba(34,197,94,0.05), transparent) }
+
+/* small transitions para filas */
+tr { transition: background-color .24s ease, transform .18s ease }
+
+/* anims */
+@keyframes etaUpFlash {
+  0% { box-shadow: 0 0 0 rgba(239,68,68,0.12); transform: translateY(0) }
+  30% { box-shadow: 0 8px 28px rgba(239,68,68,0.08); transform: translateY(-3px) }
+  100% { box-shadow: none; transform: translateY(0) }
+}
+@keyframes etaDownFlash {
+  0% { box-shadow: 0 0 0 rgba(34,197,94,0.12); transform: translateY(0) }
+  30% { box-shadow: 0 8px 28px rgba(34,197,94,0.06); transform: translateY(-3px) }
+  100% { box-shadow: none; transform: translateY(0) }
 }
 
-/* INPUTS */
-input{
-  width:100%;
-  padding:10px 12px;
-  border-radius:10px;
-  border:1px solid #1f2937;
-  background:#020617;
-  color:var(--text);
-  outline:none;
-  transition:0.2s;
-}
-
-input:focus{
-  border:1px solid var(--secondary);
-  box-shadow:0 0 0 2px rgba(56,189,248,.2);
-}
-
-/* BOTONES */
-button{
-  padding:12px;
-  border-radius:14px;
-  border:none;
-  background:linear-gradient(135deg, var(--primary), #16a34a);
-  color:#022c22;
-  font-weight:bold;
-  cursor:pointer;
-  transition:0.2s;
-  letter-spacing:0.4px;
-}
-
-button:hover{
-  transform:translateY(-2px);
-  box-shadow:0 8px 20px rgba(34,197,94,0.3);
-}
-
-#stopSimBtn{
-  background:linear-gradient(135deg, var(--danger), #b91c1c);
-  color:#fff;
-}
-
-small{
-  color:var(--muted);
-  display:block;
-  margin-top:6px;
-}
-
-/* MAPA */
-#map{
-  height:420px;
-  border-radius:20px;
-  overflow:hidden;
-  border:2px solid #1f2937;
-  box-shadow: 0 0 18px rgba(56,189,248,.15);
-}
-
-/* TABLA */
-table{
-  width:100%;
-  border-collapse:collapse;
-  margin-top:10px;
-  font-size:0.92rem;
-}
-
-th{
-  background:#020617;
-  padding:10px 6px;
-  color:var(--secondary);
-  font-weight:600;
-  border-bottom:1px solid #1f2937;
-}
-
-td{
-  padding:8px 4px;
-  border-bottom:1px solid #1f2937;
-}
-
-tr:nth-child(even){
-  background:#020617;
-}
-
-.pill{
-  display:inline-block;
-  padding:4px 10px;
-  border-radius:999px;
-  background:linear-gradient(135deg, #38bdf8, #0ea5e9);
-  color:#001018;
-  font-size:12px;
-  margin-left:4px;
-  font-weight:600;
-}
-
-::-webkit-scrollbar{width:8px}
-::-webkit-scrollbar-thumb{background:#1f2937;border-radius:10px}
-
+/* responsive */
 @media(max-width:760px){
-  .row{flex-direction:column;}
-  #map{height:320px;}
-  body{padding:12px;}
+  .row{flex-direction:column}
+  #map{height:320px}
+  body{padding:12px}
 }
 </style>
 </head>
-
 <body>
-
 <h1>🚌 Simulador buses → paradero</h1>
 <div id="status">Estado: listo</div>
 
 <div class="card">
   <h3>📍 Destino (paradero)</h3>
   <div class="row">
-    <div>
-      <label>Lat</label>
-      <input id="destLat">
-    </div>
-    <div>
-      <label>Lon</label>
-      <input id="destLon">
-    </div>
+    <div><label>Lat</label><input id="destLat"></div>
+    <div><label>Lon</label><input id="destLon"></div>
   </div>
   <button id="setDestBtn">Establecer destino</button>
 </div>
 
 <div class="card">
   <h3>🚌 Crear bus (ruta + paraderos OSM)</h3>
-
   <div class="row">
-    <div>
-      <label>Bus ID</label>
-      <input id="busId" value="bus001">
-    </div>
-    <div>
-      <label>Velocidad (km/h)</label>
-      <input id="speed" value="25">
-    </div>
+    <div><label>Bus ID</label><input id="busId" placeholder="bus001" value="bus001"></div>
+    <div><label>Velocidad (km/h)</label><input id="speed" value="25"></div>
   </div>
-
   <div class="row">
-    <div>
-      <label>Origen lat</label>
-      <input id="srcLat" value="-33.0066285122585">
-    </div>
-    <div>
-      <label>Origen lon</label>
-      <input id="srcLon" value="-71.5451341716933">
-    </div>
+    <div><label>Origen lat</label><input id="srcLat" placeholder="-33.02" value="-33.0066285122585"></div>
+    <div><label>Origen lon</label><input id="srcLon" placeholder="-71.54" value="-71.5451341716933"></div>
   </div>
-
   <div class="row">
     <button id="startSimBtn">Iniciar simulación</button>
     <button id="stopSimBtn">Detener</button>
   </div>
-
   <small>Las paradas se obtienen de OpenStreetMap a lo largo de la ruta.</small>
 </div>
 
-<div class="card">
-  <h3>🗺 Mapa</h3>
-  <div id="map"></div>
-</div>
+<div class="card"><h3>🗺 Mapa</h3><div id="map"></div></div>
 
 <div class="card">
   <h3>⏱ Próximas llegadas</h3>
@@ -252,74 +157,61 @@ tr:nth-child(even){
 
 <script>
 (function(){
-  const statusEl=document.getElementById('status');
-  const destLat=document.getElementById('destLat');
-  const destLon=document.getElementById('destLon');
-  const setDestBtn=document.getElementById('setDestBtn');
-  const busIdEl=document.getElementById('busId');
-  const speedEl=document.getElementById('speed');
-  const srcLatEl=document.getElementById('srcLat');
-  const srcLonEl=document.getElementById('srcLon');
-  const startSimBtn=document.getElementById('startSimBtn');
-  const stopSimBtn=document.getElementById('stopSimBtn');
-  const arrivalsEl=document.getElementById('arrivals');
+  // DOM
+  const statusEl = document.getElementById('status');
+  const destLat = document.getElementById('destLat'), destLon = document.getElementById('destLon');
+  const setDestBtn = document.getElementById('setDestBtn');
+  const busIdEl = document.getElementById('busId'), speedEl = document.getElementById('speed');
+  const srcLatEl = document.getElementById('srcLat'), srcLonEl = document.getElementById('srcLon');
+  const startSimBtn = document.getElementById('startSimBtn'), stopSimBtn = document.getElementById('stopSimBtn');
+  const arrivalsEl = document.getElementById('arrivals');
 
-  const stopIdEl=document.getElementById('stopId');
-  const fetchStopBtn=document.getElementById('fetchStopBtn');
-  const stopDataEl=document.getElementById('stopData');
+  // optional RED elements (may be commented out)
+  const stopIdEl = document.getElementById('stopId');
+  const fetchStopBtn = document.getElementById('fetchStopBtn');
+  const stopDataEl = document.getElementById('stopData');
 
-  let map=L.map('map'); 
+  // map
+  let map = L.map('map');
   L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{maxZoom:19}).addTo(map);
-
-  let destMarker=L.marker([0,0],{title:'Paradero destino'}).addTo(map);
-  let busMarkers={}, polylines={}, stopMarkers={};
+  let destMarker = L.marker([0,0],{title:'Paradero destino'}).addTo(map);
+  let busMarkers = {}, polylines = {}, stopMarkers = {};
 
   fetch('/get_destination').then(r=>r.json()).then(j=>{
-    const [la,lo]=j.destino; 
-    destLat.value=la; 
-    destLon.value=lo; 
-    destMarker.setLatLng([la,lo]); 
-    map.setView([la,lo],13);
-  });
+    const [la,lo]=j.destino;
+    destLat.value = la; destLon.value = lo;
+    destMarker.setLatLng([la,lo]); map.setView([la,lo],13);
+  }).catch(()=>{ map.setView([-33.01,-71.54],13) });
 
-  setDestBtn.onclick=()=>{
-    const la=parseFloat(destLat.value), lo=parseFloat(destLon.value);
-    if(isNaN(la)||isNaN(lo)){alert('Destino inválido');return;}
+  setDestBtn.onclick = ()=>{
+    const la = parseFloat(destLat.value), lo = parseFloat(destLon.value);
+    if(isNaN(la)||isNaN(lo)){ alert('Destino inválido'); return; }
     fetch('/set_destination',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({lat:la,lon:lo})
-    }).then(()=>{
-      destMarker.setLatLng([la,lo]); 
-      map.setView([la,lo],13);
-    });
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({lat:la, lon:lo})
+    }).then(()=>{ destMarker.setLatLng([la,lo]); map.setView([la,lo],13) });
   };
 
-  startSimBtn.onclick=async ()=>{
-    const id=(busIdEl.value||'bus001').trim(); 
-    const sp=parseFloat(speedEl.value||'25');
-    const la=parseFloat(srcLatEl.value), lo=parseFloat(srcLonEl.value);
-    if(isNaN(la)||isNaN(lo)){alert('Origen inválido');return;}
+  startSimBtn.onclick = async ()=>{
+    const id = (busIdEl.value||'bus001').trim();
+    const sp = parseFloat(speedEl.value||'25');
+    const la = parseFloat(srcLatEl.value), lo = parseFloat(srcLonEl.value);
+    if(isNaN(la)||isNaN(lo)){ alert('Origen inválido'); return; }
 
-    const res=await fetch('/sim/start',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({bus_id:id, lat:la, lon:lo, speed_kmh:sp})
+    const res = await fetch('/sim/start',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({bus_id:id, lat:la, lon:lo, speed_kmh:sp})
     });
+    const j = await res.json();
+    if(!j.ok){ alert('No se pudo iniciar'); return; }
 
-    const j=await res.json(); 
-    if(!j.ok){alert('No se pudo iniciar');return;}
-
-    if(j.points?.length>=2){ 
+    if(j.points?.length>=2){
       if(polylines[id]) map.removeLayer(polylines[id]);
-      polylines[id]=L.polyline(j.points,{weight:4,opacity:0.75}).addTo(map);
+      polylines[id] = L.polyline(j.points,{weight:4,opacity:0.75}).addTo(map);
       map.fitBounds(polylines[id].getBounds().pad(0.3));
     }
 
-    if(stopMarkers[id]){
-      for(const m of stopMarkers[id]) map.removeLayer(m);
-    }
-
+    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); }
     stopMarkers[id]=[];
     (j.auto_stops||[]).forEach(s=>{
       const mk=L.circleMarker([s[0],s[1]],{radius:5,opacity:0.9}).addTo(map);
@@ -328,101 +220,162 @@ tr:nth-child(even){
     });
   };
 
-  stopSimBtn.onclick=async ()=>{
-    const id=(busIdEl.value||'bus001').trim();
-    await fetch('/sim/stop',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({bus_id:id})
-    });
-
-    if(busMarkers[id]){map.removeLayer(busMarkers[id]); delete busMarkers[id];}
-    if(polylines[id]){map.removeLayer(polylines[id]); delete polylines[id];}
-    if(stopMarkers[id]){
-      for(const m of stopMarkers[id]) map.removeLayer(m);
-      delete stopMarkers[id];
-    }
+  stopSimBtn.onclick = async ()=>{
+    const id = (busIdEl.value||'bus001').trim();
+    await fetch('/sim/stop',{ method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({bus_id:id}) });
+    if(busMarkers[id]){ map.removeLayer(busMarkers[id]); delete busMarkers[id]; }
+    if(polylines[id]){ map.removeLayer(polylines[id]); delete polylines[id]; }
+    if(stopMarkers[id]){ for(const m of stopMarkers[id]) map.removeLayer(m); delete stopMarkers[id]; }
   };
 
+  // persist previous ETAs to detect change
+  if(!window.prevETAs) window.prevETAs = {};
+
+  // map of occ_status keywords to classes
+  function occStatusToClass(s){
+    if(!s) return 'occ-unknown';
+    const t = String(s).toLowerCase();
+    if(t.includes('baja') || t.includes('low') ) return 'occ-baja';
+    if(t.includes('media') || t.includes('medium') || t.includes('med')) return 'occ-media';
+    if(t.includes('alta') || t.includes('high') || t.includes('alto')) return 'occ-alta';
+    if(t.includes('crit') || t.includes('llena') || t.includes('full')) return 'occ-critica';
+    // fallback: numeric pct
+    const n = parseInt(t.replace('%',''));
+    if(!isNaN(n)){
+      if(n < 40) return 'occ-baja';
+      if(n < 75) return 'occ-media';
+      return 'occ-alta';
+    }
+    return 'occ-unknown';
+  }
+
+  // determine state class from bus flags
+  function stateClassFor(bus){
+    if(bus.arrived) return 'state-en-paradero';
+    if(bus.is_dwell) return 'state-en-parada';
+    if(bus.has_route) return 'state-en-ruta';
+    return 'state-sin-ruta';
+  }
+
+  // refresh display
   async function refreshBuses(){
     try{
-      const j=await (await fetch('/sim/buses')).json(); 
+      const res = await fetch('/sim/buses');
+      const j = await res.json();
       if(!j.ok) return;
 
-      const [dla,dlo]=j.destino; 
-      destMarker.setLatLng([dla,dlo]);
+      const [dla,dlo] = j.destino || [null,null];
+      if(dla!=null) destMarker.setLatLng([dla,dlo]);
 
-      const list=[...j.buses].sort((a,b)=>a.eta_min-b.eta_min);
+      const list = [...(j.buses||[])].sort((a,b)=>a.eta_min - b.eta_min);
 
-      let html=`<table>
-        <tr>
-          <th>Bus</th>
-          <th>Dist</th>
-          <th>ETA</th>
-          <th>Paradas</th>
-          <th>Status</th>
-          <th>Estado</th>
-        </tr>`;
+      let html = `<table>
+        <tr><th>Bus</th><th>Dist</th><th>ETA</th><th>Paradas</th><th>Ocupación</th><th>Estado</th></tr>`;
 
       if(list.length===0){
-        html+=`<tr><td colspan="6"><i>Sin buses</i></td></tr>`;
-        statusEl.textContent='Estado: sin buses';
+        html += `<tr><td colspan="6"><i>Sin buses</i></td></tr>`;
+        statusEl.textContent = 'Estado: sin buses';
       } else {
-        statusEl.textContent=`Próxima llegada: ${list[0].bus_id} en ${list[0].eta_min.toFixed(1)} min`;
+        statusEl.textContent = `Próxima llegada: ${list[0].bus_id} en ${list[0].eta_min.toFixed(1)} min`;
 
         for(const b of list){
-          const id=b.bus_id, la=b.lat, lo=b.lon;
+          const id = b.bus_id;
+          const la = b.lat, lo = b.lon;
 
-          if(!busMarkers[id]) 
-            busMarkers[id]=L.marker([la,lo],{title:id}).addTo(map); 
-          else 
-            busMarkers[id].setLatLng([la,lo]);
+          // marker
+          if(!busMarkers[id]) busMarkers[id] = L.marker([la,lo],{title:id}).addTo(map);
+          else busMarkers[id].setLatLng([la,lo]);
 
-          let tip=`${id}<br>Dist: ${b.distance_km.toFixed(2)} km<br>ETA: ${b.eta_min.toFixed(1)} min`;
-          if(b.is_dwell) tip+=`<br><span class="pill">Detenido</span>`;
+          // tooltip
+          let tip = `${id}<br>Dist: ${b.distance_km.toFixed(2)} km<br>ETA: ${b.eta_min.toFixed(1)} min`;
+          if(b.is_dwell) tip += `<br><span class="pill">Detenido</span>`;
           busMarkers[id].bindTooltip(tip);
 
-          const si=b.stops_total>0?`${b.stops_next_idx}/${b.stops_total}`:'—';
-          const state=b.arrived?'En paradero':(b.is_dwell?'En parada':(b.has_route?'En ruta':'Recta'));
-          const occStatus = b.occ_status ?? '—';
+          // stops
+          const si = b.stops_total > 0 ? `${b.stops_next_idx}/${b.stops_total}` : '—';
 
-          html+=`
-          <tr>
+          // state & occ classes
+          const stateClass = stateClassFor(b);
+          const occRaw = b.occ_status ?? (b.occ_pct != null ? `${b.occ_pct}%` : null);
+          const occClass = occStatusToClass(occRaw);
+
+          // build occ label
+          let occLabel = '—';
+          if(b.occ_count != null){
+            occLabel = `${b.occ_count}/${b.occ_capacity ?? '—'} (${b.occ_pct != null ? b.occ_pct + '%' : '—'})`;
+          } else if(occRaw) {
+            occLabel = String(occRaw);
+          }
+
+          // ETA change highlight
+          const prev = window.prevETAs[id];
+          let etaClass = '';
+          if(prev !== undefined){
+            if(b.eta_min > prev) etaClass = 'eta-up';
+            else if(b.eta_min < prev) etaClass = 'eta-down';
+          }
+          window.prevETAs[id] = b.eta_min;
+
+          html += `<tr id="row-${id}" class="${etaClass}">
             <td><b>${id}</b></td>
             <td>${b.distance_km.toFixed(2)} km</td>
             <td>${b.eta_min.toFixed(1)} min</td>
             <td>${si}</td>
-            <td>${occStatus}</td>
-            <td>${state}</td>
+            <td><span class="${occClass}">${escapeHtml(occLabel)}</span></td>
+            <td class="${stateClass}">${escapeHtml(stateLabel(b))}</td>
           </tr>`;
         }
       }
 
-      html+='</table>'; 
-      arrivalsEl.innerHTML=html;
+      html += `</table>`;
+      arrivalsEl.innerHTML = html;
 
-    } catch(e){}
+      // cleanup: remove eta highlight classes after short delay so animation can play
+      // iterate rows with id row-*
+      setTimeout(()=>{
+        document.querySelectorAll('[id^="row-"]').forEach(r=>{
+          r.classList.remove('eta-up','eta-down');
+        });
+      }, 1200);
+
+    } catch(e){
+      // silent
+      // console.error(e);
+    }
   }
 
-  setInterval(refreshBuses, 1000); 
+  function stateLabel(b){
+    if(b.arrived) return 'En paradero';
+    if(b.is_dwell) return 'En parada';
+    if(b.has_route) return 'En ruta';
+    return 'Sin ruta';
+  }
+
+  // small helper to avoid XSS if ever used with external text
+  function escapeHtml(s){
+    return String(s).replace(/[&<>"']/g, function(m){
+      return {'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m];
+    });
+  }
+
+  // initial + interval
   refreshBuses();
+  setInterval(refreshBuses, 1000);
 
+  // optional RED lookup (guarded)
   if(fetchStopBtn){
-      fetchStopBtn.onclick=async()=>{
-        const s=(stopIdEl.value||'').trim(); 
-        if(!s){alert('Ingresa stop_id');return;}
-
-        try{ 
-          const j=await (await fetch('/red/arrivals/'+encodeURIComponent(s))).json(); 
-          stopDataEl.innerHTML='<pre>'+JSON.stringify(j.data||j,null,2)+'</pre>'; 
-        } catch(_){ 
-          stopDataEl.textContent='Error'; 
-        }
-      };
+    fetchStopBtn.onclick = async ()=>{
+      const sid = (stopIdEl.value||'').trim();
+      if(!sid){ alert('Ingresa stop_id'); return; }
+      try{
+        const r = await fetch('/red/arrivals/'+encodeURIComponent(sid));
+        const j = await r.json();
+        stopDataEl.innerHTML = '<pre>'+escapeHtml(JSON.stringify(j.data||j, null, 2))+'</pre>';
+      }catch(e){ stopDataEl.textContent = 'Error'; }
+    };
   }
 
 })();
 </script>
-
 </body>
 </html>
